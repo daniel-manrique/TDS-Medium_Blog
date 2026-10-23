@@ -1,0 +1,20 @@
+---
+title: "Article title"
+subtitle: "Optional subtitle"
+keywords:
+  - keyword 1
+  - keyword 2
+---
+
+Shared settings (author, license, bibliography, CSL, HTML/PDF format) come from
+`_quarto.yml` at the repository root.
+
+Paths are relative to this folder:
+
+- `data/`   input datasets, e.g. `read.csv("data/my_data.csv")`
+- `models/` fitted models (git-ignored), e.g. `brm(..., file = "models/Fit1")`
+- `plots/`  static images, e.g. `![Caption](plots/figure.png)`
+
+```{r}
+library(ggplot2)
+```

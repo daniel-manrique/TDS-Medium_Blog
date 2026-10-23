@@ -1,9 +1,7 @@
 ---
-title: "Untitled"
+title: "Beyond the Mean: Embracing Uncertainty in Measurements with Bayesian Analysis and multilevel modeling"
 editor: visual
 ---
-
-# Beyond the Mean: Embracing Uncertainty in Measurements with Bayesian Analysis and multilevel modeling
 
 In studies involving biological measurements, it's common to encounter data sets with multiple measurements of the same variable. These situations are common in behavioral studies, where researchers (often) measure the same variable three times. We have been taught to summarize this wealth of data by calculating the mean to provide a single, digestible number that represents the central tendency.
 
@@ -130,7 +128,7 @@ Average_Fit <- brm(AverageTimeSpent ~ Group,
            seed = 8807,
            control = list(adapt_delta = 0.99),
            # this is to save the model in my laptop
-           file    = "Models/20240203_BeyondTheMean/Average_Fit.rds",
+           file    = "models/Average_Fit.rds",
            file_refit = "never")
 
 summary(Average_Fit)
@@ -206,7 +204,7 @@ Complete_Fit <- brm(TimeSpent ~ Group + (1 | AnimalID),
            warmup = 2500,
            control = list(adapt_delta = 0.99),
            # this is to save the model in my laptop
-           file    = "Models/20240203_BeyondTheMean/Complete_Fi1.rds",
+           file    = "models/Complete_Fi1.rds",
            file_refit = "never")
 
 summary(Complete_Fit)

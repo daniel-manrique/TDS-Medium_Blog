@@ -1,47 +1,10 @@
 ---
-title-block-banner: true
 title: "Avoiding abuse and misuse of T-test and ANOVA: Regression for categorical responses"
 subtitle: "An approach using Bayesian regression with brms"
-date: today
-date-format: full
-author: 
-  - name: "Daniel Manrique-Castano"
-    orcid: 0000-0002-1912-1764
-    degrees:
-      - PhD
-    affiliation: 
-      - name: Univerisity Laval 
-        department: Psychiatry and Neuroscience
-        group: Laboratory of neurovascular interactions 
-note: "GitHub: https://daniel-manrique.github.io/"
 keywords: 
   - Ordinal regression distribution
   - Bayesian modeling
   - brms 
-   
-license: "CC BY"
-
-format:
-   pdf: 
-    toc: true
-    number-sections: true
-    colorlinks: true
-   html:
-    code-fold: true
-    embed-resources: true
-    toc: true
-    toc-depth: 2
-    toc-location: left
-    number-sections: true
-    theme: spacelab
-
-knitr:
-  opts_chunk: 
-    warning: false
-    message: false
-    
-csl: science.csl
-bibliography: References.bib
 ---
 
 In neuroscience and other biomedical sciences, it is common to use behavioral tests to assess responses to experimental conditions or treatments. We can assess many aspects, from basic motor and exploratory behaviors to memory and learning. Many of these variables are continuous (numerical) responses, i.e. they can take (finite or infinite) values in a given range. Time in the open field, animal weight, or the number of cells in a brain region can generally be thought of as continuous numerical variables.
@@ -62,7 +25,7 @@ However, there are other types of variables that we researchers record in our ex
 
 Note that the numbers are just simple conventions. We could also use a,b,c,d,e; excellent, good, not so good, bad, very bad, almost dead; etc. I really do not think it is presumptuous to stress the self-evident nature of the matter. Surprisingly, however, [@fig-sample; @onufriev2021; @liu2022] represents a particular and widespread malpractice that scientists in this field have been practicing for years: They use t-tests and ANOVAS to analyze such ordered categorical variables.
 
-![Left: Neurological score by Onufriev et. al (2021) (CC-BY). Right: Neurological score by Liu et al. (2022) (CC-BY).](Plots/2024-04-03_UseAndAbuseANOVA/Test%20example.png){#fig-sample fig-align="center"}
+![Left: Neurological score by Onufriev et. al (2021) (CC-BY). Right: Neurological score by Liu et al. (2022) (CC-BY).](plots/Test%20example.png){#fig-sample fig-align="center"}
 
 I still cannot find a logical explanation why dozens of authors, reviewers, and editors feel comfortable with this scenario. Not only is it not logical, but more importantly, it leads to biased effect sizes, low detection rates, and type I error rates, among other things [@bürkner2019].
 
@@ -206,7 +169,7 @@ Ordinal_Fit <- brm(Response ~ Group,
            seed = 8807,
            control = list(adapt_delta = 0.99),
            # this is to save the model in my laptop
-           file    = "Models/2024-04-03_UseAndAbuseANOVA/Ordinal_Fit.rds",
+           file    = "models/Ordinal_Fit.rds",
            file_refit = "never")
 
 # Add loo for model comparison
@@ -309,7 +272,7 @@ Ordinal_Fit2 <- brm(
            seed = 8807,
            control = list(adapt_delta = 0.99),
            # this is to save the model in my laptop
-           file    = "Models/2024-04-03_UseAndAbuseANOVA/Ordinal_Fit2.rds",
+           file    = "models/Ordinal_Fit2.rds",
            file_refit = "never")
 
 # Add loo for model comparison

@@ -1,40 +1,9 @@
 ---
-title-block-banner: true
 title: "Do not over-think about 'outliers', use a student-t distribution instead"
-date: today
-date-format: full
-author: 
-  - name: "Daniel Manrique-Castano"
-    orcid: 0000-0002-1912-1764
-    affiliation: Univerisity Laval (Laboratory of neurovascular interactions) 
 keywords: 
   - Student's-t distribution
   - Bayesian modeling
   - brms 
-   
-license: "CC BY"
-
-format:
-   pdf: 
-    toc: true
-    number-sections: true
-    colorlinks: true
-   html:
-    code-fold: true
-    embed-resources: true
-    toc: true
-    toc-depth: 2
-    toc-location: left
-    number-sections: true
-    theme: spacelab
-
-knitr:
-  opts_chunk: 
-    warning: false
-    message: false
-    
-csl: science.csl
-bibliography: References.bib
 ---
 
 For many researchers, outliers are rogue waves that can dramatically alter the course of the analysis or "confound" some expected effects. I prefer to use the term "extreme observations" and leave the term outlier for observations that are not truly part of the population being studied. For example, in my field (brain ischemia research), an outlier is an animal that does not have ischemia (when it should have), while extreme observations are animals with small or large ischemias that are very different from the others.
@@ -150,7 +119,7 @@ First, we load the dataset into our environment and set the corresponding factor
 #| message: false
 #| column: margin
 
-data <- read.csv("Data/Rotarod.csv")
+data <- read.csv("data/Rotarod.csv")
 data$Day <- factor(data$Day, levels = c("1", "2"))
 data$Genotype <- factor(data$Genotype, levels = c("WT", "KO"))
 head(data)
@@ -228,7 +197,7 @@ Gaussian_Fit1 <- brm(Trial3 ~ Day * Genotype,
            seed = 8807,
            control = list(adapt_delta = 0.99),
            # this is to save the model in my laptop
-           file    = "Models/20240222_OutliersStudent-t/Gaussian_Fit1.rds",
+           file    = "models/Gaussian_Fit1.rds",
            file_refit = "never")
 
 # Add loo for model comparison
@@ -355,7 +324,7 @@ Student_Fit <- brm(Trial3 ~ Day * Genotype,
            seed = 8807,
            control = list(adapt_delta = 0.99),
            # this is to save the model in my laptop
-           file    = "Models/20240222_OutliersStudent-t/Student_Fit.rds",
+           file    = "models/Student_Fit.rds",
            file_refit = "never")
 
 # Add loo for model comparison
@@ -452,7 +421,7 @@ Student_Fit2 <- brm(
            seed = 8807,
            control = list(adapt_delta = 0.99),
            # this is to save the model in my laptop
-           file    = "Models/20240222_OutliersStudent-t/Student_Fit2.rds",
+           file    = "models/Student_Fit2.rds",
            file_refit = "never")
 
 # Add loo for model comparison

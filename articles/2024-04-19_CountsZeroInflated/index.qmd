@@ -1,48 +1,11 @@
 ---
-title-block-banner: true
 title: "Improving the analysis of object (or cells) counts  with lots of zeros"
 subtitle: "An approach using hurdle and zero-inflated models with brms"
-date: today
-date-format: full
-author: 
-  - name: "Daniel Manrique-Castano"
-    orcid: 0000-0002-1912-1764
-    degrees:
-      - PhD
-    affiliation: 
-      - name: Univerisity Laval 
-        department: Psychiatry and Neuroscience
-        group: Laboratory of neurovascular interactions 
-note: "GitHub: https://daniel-manrique.github.io/"
 keywords: 
   - zero-inflated models
   - cell counts
   - Bayesian modeling
   - brms 
-   
-license: "CC BY"
-
-format:
-   pdf: 
-    toc: true
-    number-sections: true
-    colorlinks: true
-   html:
-    code-fold: true
-    embed-resources: true
-    toc: true
-    toc-depth: 2
-    toc-location: left
-    number-sections: true
-    theme: spacelab
-
-knitr:
-  opts_chunk: 
-    warning: false
-    message: false
-    
-csl: science.csl
-bibliography: References.bib
 ---
 
 # Load libraries and themes
@@ -109,7 +72,7 @@ As researchers, we must strive for better, going beyond t-tests and ANOVAs. This
 
 In many studies, like the one shown in the graph by [@baraibar2020], we encounter the challenge of low cell counts, particularly where one group—marked here in black—appears to be dominated by zero counts. This scenario is not uncommon in biomedical literature, where straightforward linear models are frequently applied to analyze such data.
 
-![CD3+ cells by Baraibar et. al (2020) (CC-BY)](Plots/2024-04-19_CountsZeroInflated/CoutingZeros.png){#fig-sample fig-align="center"}
+![CD3+ cells by Baraibar et. al (2020) (CC-BY)](plots/CoutingZeros.png){#fig-sample fig-align="center"}
 
 However, the use of these models in cases of low or zero counts can be problematic. Without access to the original datasets—which researchers often do not share—it's difficult to evaluate the efficacy of the analysis fully. To better understand this issue, let's consider a separate dataset from my own research. Several years ago, I undertook the task of counting BrdU+ cells following an ischemic event in a specific brain area called the subventricular zone (SVZ). This particular experience inclined me to evaluate more suitable statistical approaches. 
 
@@ -122,7 +85,7 @@ These are the data:
 #| message: false
 #| column: margin
 
-Svz_data <- read.csv("Data/CellCounts.csv")
+Svz_data <- read.csv("data/CellCounts.csv")
 Svz_data$Hemisphere <- factor(Svz_data$Hemisphere, levels = c("Contralateral", "Ipsilateral"))
 head(Svz_data)
 ```
@@ -161,7 +124,7 @@ lm_Fit <- brm(Cells ~ Hemisphere,
            seed = 8807,
            control = list(adapt_delta = 0.99),
            # this is to save the model in my laptop
-           file    = "Models/2024-04-19_CountsZeroInflated/lm_Fit.rds",
+           file    = "models/lm_Fit.rds",
            file_refit = "never")
 
 # Add loo for model comparison
@@ -246,7 +209,7 @@ Hurdle_Fit1 <- brm(Cells ~ Hemisphere,
            seed = 8807,
            control = list(adapt_delta = 0.99),
            # this is to save the model in my laptop
-           file    = "Models/2024-04-19_CountsZeroInflated/Hurdle_Fit1.rds",
+           file    = "models/Hurdle_Fit1.rds",
            file_refit = "never")
 
 # Add loo for model comparison
@@ -348,7 +311,7 @@ Hurdle_Fit2 <- brm(
            seed = 8807,
            control = list(adapt_delta = 0.99),
            # this is to save the model in my laptop
-           file    = "Models/2024-04-19_CountsZeroInflated/Hurdle_Fit2.rds",
+           file    = "models/Hurdle_Fit2.rds",
            file_refit = "never")
            
 
@@ -443,7 +406,7 @@ Inflated_Fit1 <- brm(
            seed = 8807,
            control = list(adapt_delta = 0.99),
            # this is to save the model in my laptop
-           file    = "Models/2024-04-19_CountsZeroInflated/Inflated_Fit.rds",
+           file    = "models/Inflated_Fit.rds",
            file_refit = "never")
 
 # Add loo for model comparison

@@ -1,0 +1,42 @@
+project:
+  type: default
+  render:
+    - "articles/**/index.qmd"
+
+# Shared settings for all articles (paths are relative to this file)
+bibliography: shared/References.bib
+csl: shared/science.csl
+license: "CC BY"
+title-block-banner: true
+date: today
+date-format: full
+
+author:
+  - name: "Daniel Manrique-Castano"
+    orcid: 0000-0002-1912-1764
+    degrees:
+      - PhD
+    affiliation:
+      - name: Univerisity Laval
+        department: Psychiatry and Neuroscience
+        group: Laboratory of neurovascular interactions
+note: "GitHub: https://daniel-manrique.github.io/"
+
+format:
+  pdf:
+    toc: true
+    number-sections: true
+    colorlinks: true
+  html:
+    code-fold: true
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+    toc-location: left
+    number-sections: true
+    theme: spacelab
+
+knitr:
+  opts_chunk:
+    warning: false
+    message: false

@@ -1,47 +1,10 @@
 ---
-title-block-banner: true
 title: "Introduction to spatial analysis of cells for neuroscientists (part 1)"
 subtitle: "An approach using point patterns analysis with spatstat"
-date: today
-date-format: full
-author: 
-  - name: "Daniel Manrique-Castano"
-    orcid: 0000-0002-1912-1764
-    degrees:
-      - PhD
-    affiliation: 
-      - name: Univerisity Laval 
-        department: Psychiatry and Neuroscience
-        group: Laboratory of neurovascular interactions 
-note: "GitHub: https://daniel-manrique.github.io/"
 keywords: 
   - Spatial analysis
   - Point Pattern Analysis (PPA)
   - Spatial modeling
-  
-license: "CC BY"
-
-format:
-   pdf: 
-    toc: true
-    number-sections: true
-    colorlinks: true
-   html:
-    code-fold: true
-    embed-resources: true
-    toc: true
-    toc-depth: 2
-    toc-location: left
-    number-sections: true
-    theme: spacelab
-
-knitr:
-  opts_chunk: 
-    warning: false
-    message: false
-    
-csl: science.csl
-bibliography: References.bib
 ---
 
 # Load libraries and themes
@@ -128,7 +91,7 @@ Here, we'll load a point pattern I have created during my research [@manrique-ca
 #| warning: false
 #| message: false
 
-PointPatterns <- readRDS("Data/PointPatterns_5x.rds")
+PointPatterns <- readRDS("data/PointPatterns_5x.rds")
 row.names(PointPatterns) <- PointPatterns$ID 
 
 head(PointPatterns)
@@ -226,7 +189,7 @@ Astrocytes_Fit <- brm(formula = Astrocytes_Mdl,
                       seed = 8807,
                       control = list(adapt_delta = 0.99),
                       # this is to save the model in my laptop
-                      file    = "Models/2024-05-24_PPA/Astrocytes_Fit.rds",
+                      file    = "models/Astrocytes_Fit.rds",
                       file_refit = "never")
 
 # Add loo for model comparison
