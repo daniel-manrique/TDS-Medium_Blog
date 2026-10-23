@@ -387,7 +387,7 @@ I read and answer every comment.
 
 **Next, in Part 3:** the maps in this post use *how much* of one cell type there is at each location. They cannot tell whether two cell types attract or repel each other at short distances. For that we need second-order summaries such as the cross-type K function and the pair correlation function. Before I write it: should I start with neurons and astrocytes, or with astrocytes and microglia?
 
-You can find the updated version of this post on my [GitHub site](https://github.com/daniel-manrique/MediumBlog). If you want more content on data science and other topics, you might consider becoming a [medium member](https://medium.com/membership).
+You can find the code, data and an updated version of this post in the [GitHub repository](https://github.com/daniel-manrique/TDS-Medium_Blog/tree/main/articles/2026-10-23_SpatialAnalysis_Part2).
 
 -   All images, unless otherwise stated, were generated using the displayed R code.
 
