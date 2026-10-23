@@ -1,0 +1,401 @@
+---
+title: "Where a Cell Sits Matters More Than How Many There Are"
+subtitle: "Using spatstat raster layers and point process models to ask how neurons, astrocytes and microglia sit relative to each other."
+keywords:
+  - Spatial analysis
+  - Point Pattern Analysis (PPA)
+  - Raster layers
+  - Relative distribution
+  - Glial scar
+---
+
+```{r}
+#| label: LoadPack
+#| include: false
+#| warning: false
+#| message: false
+
+library(brms)
+library(dplyr)
+library(ggplot2)
+library(spatstat)
+library(tidybayes)
+library(tidyr)
+
+Plot_theme <- theme_classic() +
+  theme(
+    plot.title = element_text(size = 16, hjust = 0.5, face = "bold"),
+    axis.line = element_line(colour = "black", linewidth = 1),
+    axis.title = element_text(colour = "black", size = 14),
+    axis.text = element_text(colour = "black", size = 12),
+    strip.text = element_text(size = 12, face = "bold"),
+    legend.title = element_text(colour = "black", face = "bold", size = 12),
+    legend.text = element_text(colour = "black", size = 10)
+  )
+
+# One colour per time point, used in every figure
+DPI_cols <- c("0D" = "#4D4D4D", "5D" = "#D55E00", "15D" = "#009E73", "30D" = "#0072B2")
+```
+
+At the end of [Part 1](https://towardsdatascience.com/introduction-to-spatial-analysis-of-cells-for-neuroscientists-part-1-82bef519ad46/) [@manrique-castano2024part1] I told you that, in my data, there were fewer neurons where there were more astrocytes. I also left you an exercise: add the days post-ischemia (DPI) to the model and see whether that estimate changes. I had fitted one slope for all the animals, even though a brain at 5 days and a brain at 30 days are not the same tissue.
+
+This post is that exercise, done properly. The answer is uncomfortable: the pooled slope I showed you hides a change of sign, and it describes none of the four time points well.
+
+I believe the useful question is not how many cells there are, but how the tissue is compartmentalised, and what the distribution of one cell type tells us about another. For me, the way cells are arranged in the tissue is a key determinant of how they can interact. A cell count cannot see that. A map can.
+
+::: {.callout-note}
+## What you'll take away
+
+- How to read a **raster layer** (a pixel image of cell density) as a covariate and as an output of a spatial model.
+- How to split a section into **compartments** defined by one cell type, and describe a second cell type inside them.
+- Why one pooled slope can describe none of your groups, and how to carry the animal, not the pixel, into a Bayesian model.
+:::
+
+This is Part 2. If you have not read [Part 1](https://towardsdatascience.com/introduction-to-spatial-analysis-of-cells-for-neuroscientists-part-1-82bef519ad46/) [@manrique-castano2024part1], you only need to know that we work with a hyperframe of point patterns (neurons, astrocytes and microglia, one set per animal) and that I smooth them with a Gaussian kernel of `sigma = 0.2`. In this data set the coordinates are in millimetres, so that is 0.2 mm. The package is `spatstat` [@spatstat]; the models use `brms` [@brms] and `tidybayes` [@tidybayes]. The protocol and the preprint behind this data are in @manrique-castano2024 and @manrique-castano2023.
+
+# Same data, one new idea: the raster layer
+
+We reload the hyperframe and rebuild the astrocyte density kernel as in Part 1.
+
+```{r}
+#| label: LoadData
+#| warning: false
+#| message: false
+
+PointPatterns <- readRDS("data/PointPatterns_5x.rds")
+row.names(PointPatterns) <- PointPatterns$ID
+PointPatterns$DPI <- factor(PointPatterns$DPI, levels = c("0D", "5D", "15D", "30D"))
+
+PointPatterns$Astrocytes_Dens <- with(PointPatterns, density(Astrocytes, sigma = 0.2))
+```
+
+What is that object? `Astrocytes_Dens` is a pixel image (class `im` in `spatstat`). Each pixel stores one number: the estimated number of astrocytes per mm². That is exactly what a raster layer is in GIS, and you can treat it like one: you can use it as a covariate, compare it with another layer, cut it into classes or turn it into a data frame of x, y and value.
+
+Before we map anything, let's remember what we are comparing. Here is the number of cells per section, averaged by DPI:
+
+```{r}
+#| label: CellCounts
+#| warning: false
+#| message: false
+
+Counts_df <- data.frame(
+  ID = PointPatterns$ID,
+  DPI = PointPatterns$DPI,
+  Neurons = unlist(with(PointPatterns, npoints(Neurons))),
+  Astrocytes = unlist(with(PointPatterns, npoints(Astrocytes))),
+  Microglia = unlist(with(PointPatterns, npoints(Microglia)))
+)
+
+Counts_DPI <- Counts_df %>%
+  group_by(DPI) %>%
+  summarise(Animals = n(),
+            Neurons = round(mean(Neurons)),
+            Astrocytes = round(mean(Astrocytes)),
+            Microglia = round(mean(Microglia)))
+
+knitr::kable(Counts_DPI, caption = "Mean number of detected cells per section, by DPI.")
+```
+
+There are `r nrow(Counts_df)` animals: `r paste0(Counts_DPI$Animals, " at ", Counts_DPI$DPI, collapse = ", ")`. Astrocytes go from about `r Counts_DPI$Astrocytes[1]` cells per section at 0D to `r min(Counts_DPI$Astrocytes[2:4])`–`r max(Counts_DPI$Astrocytes[2:4])` afterwards. Keep that in mind: at 0D there is almost nothing to map, and I will come back to it.
+
+# The naive model: one slope for everyone
+
+This is the Part 1 model: neuron intensity as a function of the astrocyte density layer, with every animal pooled.
+
+```{r}
+#| label: Neurons_ppm0
+#| warning: false
+#| message: false
+
+Neurons_ppm0 <- mppm(Neurons ~ Astrocytes_Dens, data = PointPatterns)
+coef(Neurons_ppm0)
+```
+
+The slope is `r round(coef(Neurons_ppm0)["Astrocytes_Dens"], 4)` on the log scale. It is small and negative: slightly fewer neurons where there are more astrocytes. That is the sentence I wrote in Part 1.
+
+**Pause and predict.** Before running the next model, take a guess. If I let the slope change with DPI, what happens at 5 days, when astrocytes are reacting? Does the slope stay negative, become flat, or flip?
+
+```{r}
+#| label: Neurons_ppm1
+#| warning: false
+#| message: false
+
+Neurons_ppm1 <- mppm(Neurons ~ Astrocytes_Dens * DPI, data = PointPatterns)
+
+b <- coef(Neurons_ppm1)
+Slopes_df <- data.frame(
+  DPI = levels(PointPatterns$DPI),
+  Slope = c(b["Astrocytes_Dens"],
+            b["Astrocytes_Dens"] + b[paste0("Astrocytes_Dens:DPI", c("5D", "15D", "30D"))])
+)
+# Change in neuron intensity for +10 astrocytes per mm2
+Slopes_df$Change_per_10 <- round((exp(Slopes_df$Slope * 10) - 1) * 100, 1)
+
+knitr::kable(Slopes_df, digits = 4, row.names = FALSE,
+             caption = "Slope of neuron intensity on astrocyte density, by DPI (log scale), and % change in neurons per +10 astrocytes/mm².")
+```
+
+At 0D the slope is negative; at 5D and 15D it is positive; at 30D it is negative again. In round numbers, ten more astrocytes per mm² go with a change in neuron intensity of `r Slopes_df$Change_per_10[1]`% at 0D, `r Slopes_df$Change_per_10[2]`% at 5D, `r Slopes_df$Change_per_10[3]`% at 15D and `r Slopes_df$Change_per_10[4]`% at 30D.
+
+So the pooled slope was an average of different kinds of tissue. A wrong sign is not a rounding error: it points the next experiment, and the next cohort of animals, in the wrong direction. I do not trust the p-values that `mppm` reports here. The model treats every point as independent and sees hundreds to thousands of cells per animal, so it is far too confident. The unit of replication is the animal, not the cell, and I will respect that in the second half of the post.
+
+# Seeing the shape of the relation
+
+A single slope assumes that the relation is a straight line on the log scale. We can check that without assuming anything with `rhohat`, which estimates the neuron intensity as a function of a covariate layer. Each line below is one animal.
+
+```{r}
+#| label: fig-Rhohat
+#| warning: false
+#| message: false
+#| fig-cap: "Neuron intensity as a function of astrocyte density. One line per animal. The y-axis is cut at 120 cells/mm², so the tallest 0D spikes are clipped."
+#| fig-height: 6
+#| fig-width: 8
+
+Rhohat_df <- bind_rows(lapply(seq_len(nrow(PointPatterns)), function(i) {
+  r <- rhohat(PointPatterns$Neurons[[i]], PointPatterns$Astrocytes_Dens[[i]])
+  data.frame(ID = PointPatterns$ID[i], DPI = PointPatterns$DPI[i],
+             as.data.frame(r)[, c("X", "rho")])
+}))
+
+ggplot(Rhohat_df, aes(x = X, y = rho, group = ID, colour = DPI)) +
+  geom_line(alpha = 0.7, linewidth = 0.7) +
+  facet_wrap(~DPI, nrow = 2) +
+  scale_colour_manual(values = DPI_cols, guide = "none") +
+  coord_cartesian(ylim = c(0, 120)) +
+  labs(x = "Astrocyte density (cells/mm²)", y = "Neuron intensity (cells/mm²)") +
+  Plot_theme
+```
+
+What to look at: the overall drift of the lines in each panel, not the wiggles. The curves are shallow, so I would not call any of them a steep relation. At 5D the bundle drifts upward as astrocyte density rises, and at 30D it drifts downward. At 15D it is mostly flat. At 0D the lines are erratic, because with so few astrocytes the covariate barely varies and a few cells make big spikes. This is the chance to look at the animals before the model turns them into a number.
+
+# Using one layer to estimate another
+
+Here is the use of the raster layer that matters most to me: you know where one cell type is, and you ask where the other one should be. I fit a point process model to a single animal using the astrocyte layer as the only information, and then I predict a neuron layer from it. I compare it with the neuron density I actually observe.
+
+```{r}
+#| label: fig-PredictedMaps
+#| warning: false
+#| message: false
+#| fig-cap: "Astrocyte density, observed neuron density and neuron density predicted from astrocytes alone, for a 5D animal (M01) and a 30D animal (M02)."
+#| fig-height: 7
+#| fig-width: 10
+
+Fits <- with(PointPatterns, ppm(Neurons ~ Astrocytes_Dens))
+
+par(mfrow = c(2, 3), mar = c(1, 1, 3, 4))
+for (id in c("M01", "M02")) {
+  i <- which(PointPatterns$ID == id)
+  Observed  <- density(PointPatterns$Neurons[[i]], sigma = 0.2)
+  Predicted <- predict(Fits[[i]])
+  Range <- range(c(Observed$v, Predicted$v), na.rm = TRUE)
+  Cols <- hcl.colors(64, "viridis")
+
+  plot(PointPatterns$Astrocytes_Dens[[i]], col = Cols,
+       main = paste(id, PointPatterns$DPI[i], "- astrocytes"))
+  plot(Observed, col = Cols, zlim = Range, main = "neurons, observed")
+  plot(Predicted, col = Cols, zlim = Range, main = "neurons, predicted")
+}
+```
+
+Both rows use the same colour scale for observed and predicted, so you can compare them directly. If the astrocyte layer told us everything about the neurons, the two right-hand panels would be the same picture. They are not, and that is information: the difference is what astrocytes do *not* explain. For the 5D animal (top) the prediction recovers the empty region and part of the hot spots. For the 30D animal (bottom) it gets the direction, with fewer neurons where astrocytes are dense, but with much less contrast than the observed map. It misses the band of neurons along the top almost entirely. I am not claiming that astrocytes position neurons. I am claiming that, in this section, knowing one layer gives you a partial estimate of the other.
+
+# Compartments: cutting the layer into classes
+
+Maps are good for looking and bad for comparing 31 animals. To compare them I cut each astrocyte layer into four compartments of equal area with `quantess`: compartment 1 is the quarter of the section with the fewest astrocytes and compartment 4 the quarter with the most. Then I count neurons and microglia in each compartment and divide by the area.
+
+```{r}
+#| label: Compartments
+#| warning: false
+#| message: false
+
+Compartments_df <- bind_rows(lapply(seq_len(nrow(PointPatterns)), function(i) {
+  Q <- quantess(Window(PointPatterns$Neurons[[i]]), PointPatterns$Astrocytes_Dens[[i]], n = 4)
+  Area <- as.numeric(tile.areas(Q))
+  data.frame(
+    ID = PointPatterns$ID[i], DPI = PointPatterns$DPI[i], Compartment = 1:4,
+    Neurons    = as.numeric(quadratcount(PointPatterns$Neurons[[i]], tess = Q)) / Area,
+    Microglia  = as.numeric(quadratcount(PointPatterns$Microglia[[i]], tess = Q)) / Area
+  )
+}))
+
+Compartments_long <- Compartments_df %>%
+  pivot_longer(c(Neurons, Microglia), names_to = "Cell", values_to = "Density")
+```
+
+```{r}
+#| label: fig-Compartments
+#| warning: false
+#| message: false
+#| fig-cap: "Cell density inside compartments defined by astrocyte density (1 = fewest astrocytes, 4 = most). Thin lines are animals, thick lines are group means."
+#| fig-height: 6
+#| fig-width: 10
+
+ggplot(Compartments_long, aes(x = Compartment, y = Density, colour = DPI)) +
+  geom_line(aes(group = ID), alpha = 0.35) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1.6) +
+  facet_grid(Cell ~ DPI, scales = "free_y") +
+  scale_colour_manual(values = DPI_cols, guide = "none") +
+  labs(x = "Astrocyte compartment", y = "Cells/mm²") +
+  Plot_theme
+```
+
+What to look at: the thick lines. Neurons (top) fall across compartments at 0D and 30D and rise at 5D. Microglia (bottom) are the clearest of the two: from 15D on, they climb steeply into the compartments that are rich in astrocytes, while at 5D they are high everywhere. I would have missed that with a section-level cell count, which is the same number for all four compartments.
+
+There is one trap in the 0D panel, and it is the one I mentioned above. At 0D there are so few astrocytes that the lowest two compartments are defined by essentially zero. The compartments exist, but they describe a faint gradient of a handful of cells. I keep 0D in the figure because it is the reference, not because it is as informative as the others.
+
+# From compartments to an estimate with uncertainty
+
+Now I carry the animal into a Bayesian model. For each animal I take one number: the log2 ratio of cell density in the astrocyte-richest compartment over the astrocyte-poorest one. A ratio of 0 means no gradient, +1 means twice as many cells in the rich compartment and −1 means half.
+
+```{r}
+#| label: Ratios
+#| warning: false
+#| message: false
+
+Ratios_df <- Compartments_df %>%
+  group_by(ID, DPI) %>%
+  summarise(Neurons_LogRatio   = log2(Neurons[Compartment == 4] / Neurons[Compartment == 1]),
+            Microglia_LogRatio = log2(Microglia[Compartment == 4] / Microglia[Compartment == 1]),
+            .groups = "drop")
+
+# The log2 needs positive densities in both compartments
+stopifnot(all(is.finite(Ratios_df$Neurons_LogRatio)), all(is.finite(Ratios_df$Microglia_LogRatio)))
+```
+
+As in Part 1 I use a Student-t likelihood and let the variance depend on DPI, because the animals at some time points are much more alike than at others. I fit one model for each cell type. I kept the default `brms` priors. With 5 to 10 animals per group they are not irrelevant, and I have not run a prior sensitivity check here, so read the intervals with that in mind.
+
+```{r}
+#| label: Ratio_Fits
+#| warning: false
+#| message: false
+#| results: hide
+
+Neurons_Fit <- brm(bf(Neurons_LogRatio ~ DPI, sigma ~ DPI),
+                   family = student, data = Ratios_df,
+                   seed = 8807, control = list(adapt_delta = 0.99),
+                   file = "models/Neurons_Ratio_Fit", file_refit = "never")
+
+Microglia_Fit <- brm(bf(Microglia_LogRatio ~ DPI, sigma ~ DPI),
+                     family = student, data = Ratios_df,
+                     seed = 8807, control = list(adapt_delta = 0.99),
+                     file = "models/Microglia_Ratio_Fit", file_refit = "never")
+```
+
+Before reading the results, I check that the chains converged and that each model can reproduce its own data.
+
+```{r}
+#| label: Diagnostics
+#| warning: false
+#| message: false
+
+Diag_df <- bind_rows(
+  summary(Neurons_Fit)$fixed   %>% as.data.frame() %>% mutate(Model = "Neurons"),
+  summary(Microglia_Fit)$fixed %>% as.data.frame() %>% mutate(Model = "Microglia")
+) %>%
+  group_by(Model) %>%
+  summarise(Max_Rhat = max(Rhat), Min_Bulk_ESS = min(Bulk_ESS), Min_Tail_ESS = min(Tail_ESS))
+
+Diag_df$Divergences <- c(rstan::get_num_divergent(Neurons_Fit$fit),
+                         rstan::get_num_divergent(Microglia_Fit$fit))[match(Diag_df$Model, c("Neurons", "Microglia"))]
+
+knitr::kable(Diag_df, digits = 3, caption = "Convergence diagnostics for the population-level parameters.")
+```
+
+The largest R-hat is `r sprintf("%.2f", max(Diag_df$Max_Rhat))`, and the smallest effective sample size is `r round(min(Diag_df$Min_Bulk_ESS))` (bulk) and `r round(min(Diag_df$Min_Tail_ESS))` (tail). There are `r sum(Diag_df$Divergences)` divergent transitions. The posterior predictive checks below compare the observed distribution of ratios (dark line) with draws from the model (light lines):
+
+```{r}
+#| label: fig-PPCheck
+#| warning: false
+#| message: false
+#| fig-cap: "Posterior predictive checks."
+#| fig-subcap:
+#|   - "Neurons"
+#|   - "Microglia"
+#| layout-ncol: 2
+#| fig-height: 3.5
+#| fig-width: 5
+
+pp_check(Neurons_Fit, ndraws = 50) + Plot_theme
+pp_check(Microglia_Fit, ndraws = 50) + Plot_theme
+```
+
+```{r}
+#| label: fig-RatioResults
+#| warning: false
+#| message: false
+#| fig-cap: "Posterior log2 ratio of cell density, astrocyte-rich over astrocyte-poor compartment. Zero means no gradient."
+#| fig-height: 6
+#| fig-width: 8
+
+Grid <- tibble(DPI = factor(levels(Ratios_df$DPI), levels = levels(Ratios_df$DPI)))
+
+Draws_df <- bind_rows(
+  add_epred_draws(Grid, Neurons_Fit)   %>% mutate(Cell = "Neurons"),
+  add_epred_draws(Grid, Microglia_Fit) %>% mutate(Cell = "Microglia")
+)
+
+ggplot(Draws_df, aes(x = .epred, y = DPI, fill = DPI)) +
+  stat_halfeye() +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  facet_wrap(~Cell, scales = "free_x") +
+  scale_fill_manual(values = DPI_cols, guide = "none") +
+  labs(x = "log2 ratio (rich / poor compartment)", y = NULL) +
+  Plot_theme
+```
+
+```{r}
+#| label: RatioSummary
+#| warning: false
+#| message: false
+
+Summary_df <- Draws_df %>%
+  group_by(Cell, DPI) %>%
+  summarise(Median = median(.epred),
+            Lower = quantile(.epred, 0.025),
+            Upper = quantile(.epred, 0.975),
+            P_above_0 = mean(.epred > 0),
+            .groups = "drop")
+
+knitr::kable(Summary_df, digits = 2,
+             caption = "Posterior median, 95% credible interval and probability that the ratio is above zero.")
+```
+
+Read the neurons first. At 0D and 30D the posterior sits below zero, with a probability of being above zero of `r sprintf("%.2f", Summary_df$P_above_0[Summary_df$Cell == "Neurons" & Summary_df$DPI == "0D"])` and `r sprintf("%.2f", Summary_df$P_above_0[Summary_df$Cell == "Neurons" & Summary_df$DPI == "30D"])`; at 5D that probability is `r sprintf("%.2f", Summary_df$P_above_0[Summary_df$Cell == "Neurons" & Summary_df$DPI == "5D"])`. That is the sign change from the `mppm` table, now with the animal as the unit and the uncertainty shown instead of hidden. For microglia, the posterior median at 15D is `r sprintf("%.1f", Summary_df$Median[Summary_df$Cell == "Microglia" & Summary_df$DPI == "15D"])` on the log2 scale, which is about `r sprintf("%.1f", 2^Summary_df$Median[Summary_df$Cell == "Microglia" & Summary_df$DPI == "15D"])` times more microglia in the astrocyte-rich compartment. At 30D the median is `r sprintf("%.1f", Summary_df$Median[Summary_df$Cell == "Microglia" & Summary_df$DPI == "30D"])`, about `r sprintf("%.0f", 2^Summary_df$Median[Summary_df$Cell == "Microglia" & Summary_df$DPI == "30D"])` times. At 0D and 5D the interval includes zero, so I see no gradient there.
+
+<!-- TODO(Daniel): interpretación biológica del cambio de signo de neuronas a 5D; el texto solo describe los datos -->
+
+This is what I find useful about the relative approach: it answers a question about the arrangement of the tissue, and it does so with the animal as the unit of analysis.
+
+# Where this breaks
+
+I am not claiming more than the maps and models show, so here are the limits.
+
+- **Segmentation is still the weak link.** Separating one cell from several fragments of the same cell remains hard for me, especially for objects with irregular shapes like astrocytes and microglia. If an astrocyte is detected as three pieces, it adds weight to the astrocyte layer, and every compartment inherits that error. A uniform over-count shifts the layer without reordering it, which matters less for a rank-based cut like the one I use. A fragmentation that depends on the region does not shift it uniformly, and the compartments would change. I cannot rule that out from these data.
+- **The kernel and the cut are choices.** `sigma = 0.2` and four equal-area compartments are mine. Part 1 showed how much sigma changes the map. I would repeat the compartment analysis with three and six compartments before trusting a conclusion. Try it with the data in this folder, and tell me if your answer changes.
+- **0D is thin.** As above, there are very few astrocytes at 0D, so its compartments are a gradient of a handful of cells.
+- **The `mppm` table is descriptive.** It treats points as independent. I use it to show the sign change, not to test it.
+- **Sample size.** The groups have 5, 8, 8 and 10 animals. The credible intervals are wide where I would expect them to be.
+- **Association, not mechanism.** A neuron layer that follows an astrocyte layer does not say what causes what.
+
+# Your turn
+
+- Would you keep one slope for the whole time course, or one per DPI? What would make you change your mind?
+- Which pair of cell types or markers in your own tissue has the "predict one from the other" problem? Have you tried it? Nothing here is specific to glia: an ecologist swaps astrocytes for a habitat layer, an epidemiologist for a pollution map.
+- If you think equal-area quantiles are an arbitrary way to compartmentalise tissue, I want to hear your alternative.
+
+I read and answer every comment.
+
+**Next, in Part 3:** the maps in this post use *how much* of one cell type there is at each location. They cannot tell whether two cell types attract or repel each other at short distances. For that we need second-order summaries such as the cross-type K function and the pair correlation function. Before I write it: should I start with neurons and astrocytes, or with astrocytes and microglia?
+
+You can find the updated version of this post on my [GitHub site](https://github.com/daniel-manrique/MediumBlog). If you want more content on data science and other topics, you might consider becoming a [medium member](https://medium.com/membership).
+
+-   All images, unless otherwise stated, were generated using the displayed R code.
+
+# References
+
+::: {#refs}
+:::
+
+```{r}
+sessionInfo()
+```
