@@ -1,6 +1,7 @@
 # Medium / Towards Data Science blog
 
-Source files for my articles on [Medium](https://medium.com/@damanrique) and Towards Data Science.
+Reproducible code, data and Quarto documents behind my articles on statistics and data analysis in R, published on
+[Medium](https://medium.com/@damanrique) and [Towards Data Science](https://towardsdatascience.com/author/damanrique/).
 
 ## Articles
 
@@ -11,6 +12,7 @@ Source files for my articles on [Medium](https://medium.com/@damanrique) and Tow
 | 2024-04-03 | Avoiding abuse and misuse of T-test and ANOVA: Regression for categorical responses | [articles/2024-04-03_UseAndAbuseANOVA](articles/2024-04-03_UseAndAbuseANOVA) |
 | 2024-04-19 | Improving the analysis of object (or cells) counts with lots of zeros | [articles/2024-04-19_CountsZeroInflated](articles/2024-04-19_CountsZeroInflated) |
 | 2024-05-24 | Introduction to spatial analysis of cells for neuroscientists (part 1) | [articles/2024-05-24_SpatialAnalysis_Part1](articles/2024-05-24_SpatialAnalysis_Part1) |
+| 2026-10-23 | Where a Cell Sits Matters More Than How Many There Are (spatial analysis, part 2) | [articles/2026-10-23_SpatialAnalysis_Part2](articles/2026-10-23_SpatialAnalysis_Part2) |
 
 ## Repository layout
 
@@ -35,7 +37,7 @@ All paths inside an article are relative to its own folder (`data/...`, `models/
 
    ```r
    install.packages(c("brms", "tidybayes", "ggdist", "modelr", "patchwork", "easystats",
-                      "dplyr", "tibble", "ggplot2", "ghibli", "gtsummary", "spatstat"))
+                      "dplyr", "tibble", "tidyr", "ggplot2", "ghibli", "gtsummary", "spatstat"))
    ```
 3. Render one article, or all of them:
 
