@@ -1,0 +1,618 @@
+---
+title: "\"Significantly Predicts\" When R² Is 0.04: What Open Data Reveal About a Published Regression"
+subtitle: "Re-analysing an open data set with a Bayesian beta-binomial model in brms, and asking what a small slope can and cannot say"
+keywords:
+  - Bayesian modeling
+  - brms
+  - Beta-binomial regression
+  - Prediction vs. association
+  - Open data
+---
+
+```{r}
+#| label: LoadPack
+#| include: false
+#| warning: false
+#| message: false
+
+library(brms)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(patchwork)
+library(readxl)
+
+Plot_theme <- theme_classic() +
+  theme(
+    plot.title = element_text(size = 15, hjust = 0.5, face = "bold"),
+    axis.line = element_line(colour = "black", linewidth = 1),
+    axis.title = element_text(colour = "black", size = 13),
+    axis.text = element_text(colour = "black", size = 11),
+    strip.text = element_text(size = 12, face = "bold"),
+    legend.title = element_text(colour = "black", face = "bold", size = 12),
+    legend.text = element_text(colour = "black", size = 10)
+  )
+
+# One colour per concept, used in every figure
+cols <- c(lm = "#D55E00", bayes = "#0072B2", adj = "#009E73")
+dx_cols <- c(HC = "#009E73", SCC = "#56B4E9", MCI = "#E69F00", AD = "#D55E00", bvFTD = "#CC79A7")
+```
+
+<!-- TODO(Daniel): si tienes una anécdota real de una revisión en la que "predicts" no significaba predecir, este es el lugar para ella (una frase, sin nombres). -->
+
+Open a paper in any biomedical field and search for the word "predicted". In a recent study of social cognition in ageing [@fittipaldi2024], the Results section says that *"advanced age significantly predicted worse emotion recognition"*, and the Methods describe the analysis as a way to "evaluate the predictive value of age". The figure behind it shows 998 people, a red line sloping gently downwards through a cloud of grey dots, and an R² of 0.04.
+
+I have told authors, as reviewer 2, that the problem was not their extreme observations but the statistical model they had chosen. This time the model is not the whole story. The problem is a word. "Predicted" is doing the work of "was associated with", and the reader is left to guess how much prediction 4% of the variance buys.
+
+This post asks that question properly, with the authors' own open data. My claim is narrow, and I think defensible: **a slope with R² = 0.04 describes a small association; it is almost no evidence of prediction; and a pooled regression cannot tell you what that association is made of.** In this data set, a good part of it is made of *who* is old.
+
+::: {.callout-note}
+## What you'll take away
+
+- How to check that a published number **reproduces from open data**, and what to do when a data transformation is not documented.
+- Why the same slope and R² fit **very different pictures**, and which graphs and models tell them apart.
+- How to use a **beta-binomial model in `brms`** to produce what a clinician can judge: expected scores by decade, the probability that a younger person scores higher, and what changes when you account for diagnosis.
+:::
+
+A word on fairness before we start, because it shapes the critique. One sentence in a large paper is not the paper. The headline models in that study are support vector regressions with many predictors, and in those the authors report that age did not emerge as a contributor to emotion recognition, mentalizing or the total score, and that the effects of age and diagnosis "attenuate or vanish" once other factors are considered. So I agree with where the paper lands. My objection is to the first analysis in it, the one that opens with the word "predicted", because I see that pattern everywhere. Everything below uses `brms` [@brms-2] and the `tidyverse`.
+
+# What the paper prints, and what the open data reproduce
+
+When I started this post I believed the raw data were not shared, so I began to reverse-engineer the figure from the printed numbers. Then I read the data availability statement: the anonymised data and the code are on [GitHub](https://github.com/AI-BrainLat-team/Global-Mini-SEA) and on the Open Science Framework. I am glad I looked, and the authors deserve credit for it.
+
+The repository has no licence file, so I did not copy the data into this post's folder. The chunk below downloads `Data/Base.xlsx` from the source the first time you render and keeps a local copy.
+
+```{r}
+#| label: LoadData
+
+n_trials <- 35
+src   <- "https://raw.githubusercontent.com/AI-BrainLat-team/Global-Mini-SEA/main/Data/Base.xlsx"
+local <- "data/Base.xlsx"
+if (!file.exists(local)) download.file(src, local, mode = "wb", quiet = TRUE)
+raw <- read_excel(local)
+
+mini <- raw |>
+  transmute(
+    # diagnosis codes decoded by matching group sizes to the figure caption
+    dx = factor(diagnosis_specify, levels = c(1, 4, 5, 2, 3), labels = c("HC", "SCC", "MCI", "AD", "bvFTD")),
+    income = factor(country_class), sex = factor(gender),
+    age = Edad_procesada, educ = years_education,
+    fer = mini_sea_fer, tom = mini_sea_tom, total = mini_sea_total
+  ) |>
+  mutate(age_dec = (age - 72) / 10,                 # age in decades, centred at 72
+         educ5 = (educ - 12) / 5,                   # education in 5-year units, centred at 12
+         k = round(fer * n_trials / 15))            # photos identified correctly, out of 35
+
+table(mini$dx)
+```
+
+The file has 998 rows, no missing values in these columns, and group sizes that match the figure caption. The paper prints a table of simple regressions of each score on age (Extended Data Table 1). Do the open data return it?
+
+```{r}
+#| label: Reproduce
+
+reg <- function(y) {
+  m <- lm(y ~ mini$age); s <- summary(m)
+  c(slope = unname(coef(m)[2]), R2 = s$r.squared, F = unname(s$fstatistic[1]),
+    P = unname(pf(s$fstatistic[1], 1, s$fstatistic[3], lower.tail = FALSE)))
+}
+real <- t(sapply(list(mini$fer, mini$tom, mini$total), reg))
+
+knitr::kable(
+  data.frame(
+    Outcome = c("Emotion recognition", "Mentalizing", "Total"),
+    `Printed: slope, F, P` = sprintf("%.2f, %.2f, %.3g", c(-0.05, -0.05, -0.1), c(47.49, 22.22, 42), c(9.792e-12, 2.78e-06, 1.435e-10)),
+    `Open data: slope, R², F, P` = sprintf("%.3f, %.3f, %.2f, %.3g", real[, "slope"], real[, "R2"], real[, "F"], real[, "P"]),
+    check.names = FALSE
+  )
+)
+```
+
+Yes. The emotion recognition regression returns F = `r sprintf("%.2f", real[1, "F"])` and P = `r sprintf("%.3g", real[1, "P"])`, which are the printed 47.49 and 9.792e-12; the slope is `r sprintf("%.3f", real[1, "slope"])` where the paper rounds to −0.05, and R² is `r sprintf("%.3f", real[1, "R2"])`. Mentalizing and the total score match too. This is what reproducibility looks like, and I do not take it for granted.
+
+## What is still missing
+
+It also showed me what is not documented. The Methods say each score was "converted to a score of 15", and not how. Emotion recognition has 35 photos, so the natural reading is *correct answers times 15/35*. Let us check that against the data.
+
+```{r}
+#| label: Lattice
+
+grid_dist    <- abs(mini$fer - 15 * mini$k / n_trials)
+share_on_grid <- mean(grid_dist < 0.0101)      # two-decimal rounding or truncation of 15 * k / 35
+off_grid     <- mini$fer[grid_dist >= 0.0101]
+c(share_on_grid = share_on_grid, n_off_grid = length(off_grid), max_error = max(grid_dist))
+head(sort(table(off_grid), decreasing = TRUE), 5)
+```
+
+For `r sprintf("%.0f", 100 * share_on_grid)`% of the participants the score sits exactly on the grid of possible values. For the other `r length(off_grid)`, it does not: values such as 11, 10 or 13 appear dozens of times, and I do not know why. It could be a different version of the test, the harmonisation across countries mentioned in the Results, or the imputation the paper describes. The repository lists notebooks for Figure 2 and for the supplementary support vector regression tables. I did not find code for Figure 1 or for the conversion, though I have not opened every notebook.
+
+This is a small thing, and it is the reason I care about open science as more than a slogan. Shared data without the code that transformed it lets you reproduce a number, but not interpret it. I had to guess how the scores were built, and a guess can be wrong; mine was right for four participants in five. A reader with less time and less patience would not even notice the other fifth. Sharing the *transformation* (the script that turns 35 answers into a score of 15, the harmonisation, the imputation) costs the authors almost nothing, because they already wrote it. It saves everyone else from making assumptions about someone else's data, and it is the part of the pipeline where mistakes hide. In the lab we write the dilutions and the exposure times next to the blot. This is the same duty.
+
+For the model below I round every score to the nearest of the 36 possible values, which moves nobody by more than `r sprintf("%.2f", max(abs(mini$fer - 15 * mini$k / n_trials)))` points. At the end I check that this choice does not matter.
+
+# Same numbers, eight different pictures
+
+A slope and an R² are two numbers; a scatter plot has a thousand. How many different clouds of points can return a slope of about −0.05 and an R² of about 0.045 at n = 998, with the same mean and the same spread of scores? I built seven, each a different story about what ageing does to this score, each a beta-binomial process on the same 35-photo test, each using the 998 real ages and a simulated score, and calibrated to the printed statistics. The eighth panel is the real data.
+
+```{r}
+#| label: PanelWorlds
+#| code-fold: true
+
+dec      <- function(a) (a - 72) / 10
+bb_score <- function(mu, phi)
+  15 * rbinom(length(mu), n_trials, rbeta(length(mu), mu * phi, (1 - mu) * phi)) / n_trials
+
+panel_gen <- list(
+  "Steady decline in everyone" = function(a)
+    bb_score(plogis(0.9401 - 0.1787 * dec(a)), 13),
+  "Decline only after 75" = function(a)
+    bb_score(plogis(1.06 - 0.5888 * pmax(a - 75, 0) / 10), 13),
+  "Decline only before 70" = function(a)
+    bb_score(plogis(1.666 - 0.4093 * pmin(pmax(a - 50, 0), 20) / 10), 13),
+  "Variance grows with age" = function(a)
+    bb_score(plogis(0.9461 - 0.1864 * dec(a)), exp(log(13) - 0.6 * dec(a))),
+  "A growing minority is impaired" = function(a) {
+    imp <- rbinom(length(a), 1, plogis(-1.533 + 1.089 * dec(a)))
+    bb_score(ifelse(imp == 1, 0.52, 0.76), ifelse(imp == 1, 14, 40)) },
+  "A few extreme low scorers, all old" = function(a) {
+    imp <- rbinom(length(a), 1, plogis(-4.324 + 2.534 * dec(a)))
+    bb_score(ifelse(imp == 1, 0.28, 0.74), ifelse(imp == 1, 18, 40)) },
+  "Half decline fast, half not at all" = function(a) {
+    g <- rbinom(length(a), 1, 0.5)
+    bb_score(plogis(0.9473 - 2 * g * 0.1791 * dec(a)), 13) }
+)
+
+# keep the seed whose sample lands closest to the real slope and R2
+pick_world <- function(gen, label) {
+  fits <- sapply(1:400, function(s) {
+    set.seed(s); y <- gen(mini$age); m <- lm(y ~ mini$age); c(coef(m)[2], summary(m)$r.squared)
+  })
+  s <- which.min(((fits[1, ] - real[1, "slope"]) / 0.002)^2 + ((fits[2, ] - real[1, "R2"]) / 0.004)^2)
+  set.seed(s); data.frame(age = mini$age, y = gen(mini$age), scenario = label)
+}
+
+scenario_order <- c(names(panel_gen), "The real data")
+panel_df <- bind_rows(
+  lapply(names(panel_gen), function(nm) pick_world(panel_gen[[nm]], nm)),
+  data.frame(age = mini$age, y = mini$fer, scenario = "The real data")
+)
+
+panel_stats <- panel_df |>
+  group_by(scenario) |>
+  summarise(slope = coef(lm(y ~ age))[2], r2 = summary(lm(y ~ age))$r.squared,
+            mean = mean(y), sd = sd(y), .groups = "drop")
+
+panel_df <- panel_df |>
+  left_join(panel_stats, by = "scenario") |>
+  mutate(lab = sprintf("%d. %s\nslope %.3f, R² %.3f", match(scenario, scenario_order), scenario, slope, r2),
+         lab = factor(lab, levels = unique(lab[order(match(scenario, scenario_order))])))
+```
+
+```{r}
+#| label: fig-panel
+#| fig-cap: "Eight clouds with almost the same slope and R² (n = 998 each, the same 998 ages). Panels 1 to 7 are simulated; panel 8 is the real data. Grey points are people (jittered); the red line is the OLS fit the paper shows; the blue curve is a smoother that follows the data."
+#| fig-width: 11
+#| fig-height: 6.5
+
+ggplot(panel_df, aes(age, y)) +
+  geom_jitter(width = 0.3, height = 0.2, alpha = 0.3, size = 1, colour = "grey30") +
+  geom_smooth(method = "lm", se = FALSE, colour = cols["lm"], linewidth = 1) +
+  geom_smooth(method = "loess", span = 0.9, se = FALSE, colour = cols["bayes"], linewidth = 1) +
+  facet_wrap(~lab, ncol = 4) +
+  scale_y_continuous(limits = c(0, 15), breaks = c(0, 5, 10, 15)) +
+  labs(x = "Age (years)", y = "Emotion recognition (0-15)") +
+  Plot_theme +
+  theme(strip.text = element_text(size = 9))
+```
+
+Look at the red lines: they are the same line, and it is the only thing the paper's panel shows. The blue smoother separates the pictures partly. It exposes panels 2 and 6 (a collapse after 80 or so, either gradual or carried by a few extreme scores) and panel 3 (a drop that then stops). It does *not* separate 1, 4, 5 and 7: everybody declines a little, the cloud fans out, a minority is impaired and its share grows with age, or some people decline fast and the rest not at all. Those four tell very different stories and look alike. Which one is the real data? Panel 8 declines until about 80, then flattens, and turns up at the very end where there are few people. That is closer to panels 3 and 4 than to 2 or 6, and a scatter plot cannot say more. To find out what the slope is made of, we need other variables.
+
+# Who is old in this sample?
+
+The paper's Figure 1c shows that diagnosis moves scores by several points, and the authors' own models adjust for age in that comparison. The age panel adjusts for nothing. Let us see how age and diagnosis relate.
+
+```{r}
+#| label: GroupTable
+
+grp_tab <- mini |>
+  group_by(Group = dx) |>
+  summarise(n = n(), `Mean age` = mean(age), `SD age` = sd(age), `Mean score (0-15)` = mean(fer),
+            `Income class 1 (%)` = 100 * mean(income == "1"), .groups = "drop")
+knitr::kable(grp_tab, digits = 1)
+eta_age_dx <- summary(lm(age ~ dx, mini))$r.squared
+```
+
+The groups are not the same age. Participants with subjective cognitive complaints (SCC) average `r sprintf("%.0f", grp_tab$"Mean age"[2])` years and those with mild cognitive impairment (MCI) `r sprintf("%.0f", grp_tab$"Mean age"[3])`, against `r sprintf("%.0f", grp_tab$"Mean age"[1])` for healthy controls, and the groups with the lowest scores are among the oldest. Diagnosis alone accounts for `r sprintf("%.0f", 100 * eta_age_dx)`% of the variance in age. The last column matters too: every SCC and MCI participant comes from income class 1, which echoes a limitation the authors acknowledge, that these two groups were enrolled in a single country and centre. Age, diagnosis and place are tangled.
+
+```{r}
+#| label: fig-groups
+#| fig-cap: "Emotion recognition by age and diagnostic group (real data). Coloured lines are within-group OLS fits; the black dashed line is the pooled fit the paper shows."
+#| fig-width: 7.5
+#| fig-height: 4.8
+
+ggplot(mini, aes(age, fer, colour = dx)) +
+  geom_jitter(width = 0.3, height = 0.2, alpha = 0.35, size = 1.2) +
+  geom_smooth(method = "lm", se = FALSE, linewidth = 1) +
+  geom_smooth(aes(group = 1), method = "lm", se = FALSE, colour = "black", linetype = "dashed", linewidth = 1) +
+  scale_colour_manual(values = dx_cols) +
+  labs(x = "Age (years)", y = "Emotion recognition (0-15)", colour = NULL) +
+  Plot_theme
+```
+
+Most coloured lines are flatter than the dashed one, and the groups sit at different heights: healthy controls near the top, MCI and bvFTD near the bottom. The line for AD runs roughly parallel to the pooled one, and the line for bvFTD, with fewer people, even tilts upwards. The pooled slope is a blend of "older people score lower" and "the groups that score lower are older".
+
+# What "predicts" costs: prediction intervals
+
+**Pause and predict.** Take one person aged 55 and one aged 85 from this sample. How often does the younger one score *higher*? Write a number down; we will compute it.
+
+First let us ask the paper's line what it would say about a *new* person. A confidence band describes our uncertainty about the average; a **prediction** interval describes where a single person is likely to land.
+
+```{r}
+#| label: fig-predband
+#| fig-cap: "95% prediction band of the paper's linear model (real data). The band covers most of the scale and crosses the maximum possible score of 15."
+#| fig-width: 7
+#| fig-height: 4.5
+
+lm_pool <- lm(fer ~ age, data = mini)
+new_age <- data.frame(age = seq(50, 98, by = 1))
+pb <- cbind(new_age, predict(lm_pool, new_age, interval = "prediction"))
+
+ggplot() +
+  geom_jitter(data = mini, aes(age, fer), width = 0.3, height = 0.2, alpha = 0.25, size = 1.2) +
+  geom_ribbon(data = pb, aes(age, ymin = lwr, ymax = upr), fill = cols["lm"], alpha = 0.2) +
+  geom_line(data = pb, aes(age, fit), colour = cols["lm"], linewidth = 1) +
+  geom_hline(yintercept = 15, linetype = "dashed") +
+  labs(x = "Age (years)", y = "Emotion recognition (0-15)") +
+  Plot_theme
+```
+
+```{r}
+#| label: PredBand
+pb_at <- pb[pb$age %in% c(55, 85), ]
+round(pb_at, 1)
+```
+
+At 55 the model says a new person will land between `r round(pb_at$lwr[1], 1)` and `r round(pb_at$upr[1], 1)`. The upper limit is *above the maximum possible score*, because a Gaussian does not know about the wall. At 85 the band sits about `r sprintf("%.1f", pb_at$fit[1] - pb_at$fit[2])` points lower, and the two bands overlap across almost their whole width.
+
+It is tempting to stop here and declare that the regression predicts nothing. That would be wrong, and a critique that overshoots is easy to dismiss. The bands overlap, yet the lines are not equal: there is a real, if small, shift. The honest question is not "does it predict?" but "how much?", and for that we need a model that fits the scale.
+
+# A model that knows the scale
+
+In `brms`, a beta-binomial regression is a binomial model in which the success probability is itself Beta-distributed, so people may vary more than item noise alone allows. The formula reads: "out of 35 photos, the number correct depends on age (in decades)". We start with the paper's analysis, age alone.
+
+```{r}
+#| label: FitPooled
+#| results: hide
+
+priors <- c(
+  prior(normal(1, 1.5), class = Intercept),   # logit of ~0.75, with room to move
+  prior(normal(0, 1),   class = b),           # per decade / per unit, on the logit scale
+  prior(gamma(2, 0.1),  class = phi)          # between-person variability
+)
+
+fit_pool <- brm(
+  k | trials(35) ~ age_dec,
+  data = mini, family = beta_binomial(), prior = priors,
+  chains = 4, cores = 4, iter = 2000, seed = 123,
+  file = "models/Fit_pool"
+)
+```
+
+The priors are weakly informative: they exclude absurd effects (three logits per decade would take someone from 95% to 5% correct) but do not push the data in any direction. Before interpreting anything, we ask whether the model can generate data that look like ours.
+
+```{r}
+#| label: fig-ppc
+#| fig-cap: "Posterior predictive check for the pooled beta-binomial model. Bars show the observed number of participants at each raw score; points and lines show 100 simulated data sets."
+#| fig-width: 7
+#| fig-height: 4
+
+pp_check(fit_pool, type = "bars", ndraws = 100) +
+  labs(x = "Photos identified correctly (of 35)", y = "Participants") +
+  Plot_theme
+```
+
+The simulated sets reproduce the skewed shape and the cut-off at the top. A Gaussian cannot do that.
+
+## From a coefficient to something a reader can use
+
+A logit coefficient is not what anyone wants to know. What we want is how many points a person is expected to lose per decade, on the 0 to 15 scale of the paper. The recipe: predict everyone's expected score with their age as observed, predict again with ten years added, and average the difference, for every posterior draw so that the answer carries its uncertainty. The model works in photos, so we multiply by 15/35 at the end.
+
+```{r}
+#| label: DecadeEffect
+
+decade_effect <- function(fit, data) {
+  up <- transform(data, age_dec = age_dec + 1)
+  15 / n_trials * rowMeans(posterior_epred(fit, newdata = up) - posterior_epred(fit, newdata = data))
+}
+
+summarise_draws_simple <- function(x) {
+  c(mean = mean(x), lwr = unname(quantile(x, 0.025)), upr = unname(quantile(x, 0.975)))
+}
+
+eff_pool <- decade_effect(fit_pool, mini)
+round(summarise_draws_simple(eff_pool), 2)
+```
+
+Per extra decade, the expected score drops by `r sprintf("%.2f", -mean(eff_pool))` points (95% credible interval `r sprintf("%.2f", -quantile(eff_pool, 0.975))` to `r sprintf("%.2f", -quantile(eff_pool, 0.025))` points lost) on a 15-point scale, about a quarter of the between-person standard deviation (`r sprintf("%.1f", sd(mini$fer))`). It is a real shift, and the interval says plainly that it is not zero. It is also modest. The better model does not change the slope much; it stops us from making wrong statements around it.
+
+# What is the slope made of?
+
+Now let us give the model what the pooled regression ignores. First diagnosis, and then diagnosis plus the other variables the file holds: income class, sex and years of education. I also fit the model on healthy controls alone, where there is no disease to confound age.
+
+```{r}
+#| label: FitAdjusted
+#| results: hide
+
+fit_dx <- brm(
+  k | trials(35) ~ age_dec + dx,
+  data = mini, family = beta_binomial(), prior = priors,
+  chains = 4, cores = 4, iter = 2000, seed = 123,
+  file = "models/Fit_dx"
+)
+
+fit_full <- brm(
+  k | trials(35) ~ age_dec + dx + income + sex + educ5,
+  data = mini, family = beta_binomial(), prior = priors,
+  chains = 4, cores = 4, iter = 2000, seed = 123,
+  file = "models/Fit_full"
+)
+
+mini_hc <- filter(mini, dx == "HC")
+fit_hc <- update(fit_pool, newdata = mini_hc, seed = 123, file = "models/Fit_hc")
+```
+
+```{r}
+#| label: fig-forest
+#| fig-cap: "Change in expected emotion recognition per decade of age, under four beta-binomial models (real data). Points are posterior means; bars are 95% credible intervals."
+#| fig-width: 7.5
+#| fig-height: 3.8
+
+eff <- list(
+  "Age only\n(the paper's analysis)" = eff_pool,
+  "+ diagnosis" = decade_effect(fit_dx, mini),
+  "+ diagnosis, income,\nsex, education" = decade_effect(fit_full, mini),
+  "Healthy controls only\n(age only, n = 316)" = decade_effect(fit_hc, mini_hc)
+)
+
+eff_df <- bind_rows(lapply(names(eff), function(nm) {
+  s <- summarise_draws_simple(eff[[nm]])
+  data.frame(model = nm, mean = s["mean"], lwr = s["lwr"], upr = s["upr"])
+})) |>
+  mutate(model = factor(model, levels = rev(names(eff))),
+         type = ifelse(grepl("Age only\n", model, fixed = TRUE), "pooled", "adjusted"))
+
+ggplot(eff_df, aes(mean, model, colour = type)) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_pointrange(aes(xmin = lwr, xmax = upr), linewidth = 1, size = 0.8) +
+  scale_colour_manual(values = c(pooled = unname(cols["bayes"]), adjusted = unname(cols["adj"]))) +
+  labs(x = "Change in expected score per decade (points)", y = NULL, colour = NULL) +
+  Plot_theme
+```
+
+The paper's analysis gives `r sprintf("%.2f", mean(eff[[1]]))` points per decade. Once diagnosis is in the model the estimate falls to `r sprintf("%.2f", mean(eff[[2]]))` (95% credible interval `r sprintf("%.2f", quantile(eff[[2]], 0.025))` to `r sprintf("%.2f", quantile(eff[[2]], 0.975))`), and with income class, sex and education to `r sprintf("%.2f", mean(eff[[3]]))` (`r sprintf("%.2f", quantile(eff[[3]], 0.025))` to `r sprintf("%.2f", quantile(eff[[3]], 0.975))`). Among healthy controls it is `r sprintf("%.2f", mean(eff[[4]]))` (`r sprintf("%.2f", quantile(eff[[4]], 0.025))` to `r sprintf("%.2f", quantile(eff[[4]], 0.975))`), so ageing within a group is not zero either. The pooled slope was not wrong; it was an average over a mixture, and the mixture, not ageing within a group, accounts for much of it.
+
+Two cautions keep me from overselling this. Diagnosis can be *downstream* of ageing: if part of what makes someone 78 and MCI is ageing, adjusting for diagnosis removes a share of the true age effect together with the confounding. And the design is cross-sectional. These are differences between older and younger *people*, born in different years and with different schooling, not a decline measured within one person. So `r sprintf("%.2f", mean(eff[[3]]))` is not "the pure effect of ageing" either. It is a more defensible description than the pooled number, and the sentence "age significantly predicted" is silent about which of these quantities it is.
+
+# Making the result legible: a table and two curves
+
+A coefficient is a poor way to communicate a result, and an interval for a slope is a poor way to tell a person what to expect. I want three things on the table: the expected score at each age, how much *individuals* vary around it, and how many people would fall below a cutoff that someone might care about. To do that for a model with covariates I use the same trick as before. For each posterior draw I set everyone's age to the value of interest, keep their diagnosis, sex, income class and education as observed, and average the score distribution over the 998 people.
+
+```{r}
+#| label: PmfFunctions
+
+# Score distribution (36 possible photo counts) at a given age, averaged over the people in `data`
+pmf_std <- function(fit, data, at_age, ids = round(seq(1, ndraws(fit), length.out = 400))) {
+  phi <- as_draws_df(fit)$phi[ids]
+  nd  <- transform(data, age_dec = (at_age - 72) / 10)    # `at_age`: `age` would be masked by the column in `data`
+  mu  <- posterior_epred(fit, newdata = nd, draw_ids = ids) / n_trials     # draws x people
+  sapply(0:n_trials, function(k)
+    rowMeans(exp(lchoose(n_trials, k) + lbeta(k + mu * phi, n_trials - k + (1 - mu) * phi) -
+                   lbeta(mu * phi, (1 - mu) * phi))))
+}
+
+score_grid <- 15 * (0:n_trials) / n_trials
+ages_eval  <- seq(55, 85, by = 5)
+pm_pool <- lapply(ages_eval, function(a) pmf_std(fit_pool, mini, a))
+pm_full <- lapply(ages_eval, function(a) pmf_std(fit_full, mini, a))
+names(pm_pool) <- names(pm_full) <- ages_eval
+
+# probability that a person from P1 scores higher than one from P2 (ties count as half)
+p_higher <- function(P1, P2) {
+  cdf1 <- t(apply(P1, 1, cumsum))
+  rowSums(P2 * (1 - cdf1)) + 0.5 * rowSums(P1 * P2)
+}
+
+q <- function(x, p) unname(quantile(x, p))
+```
+
+```{r}
+#| label: ExpectedTable
+
+ages_tab <- c(55, 65, 75, 85)
+cell <- function(x) sprintf("%.1f (%.1f to %.1f)", mean(x), q(x, 0.025), q(x, 0.975))
+share <- function(x) sprintf("%.0f%% (%.0f to %.0f)", 100 * mean(x), 100 * q(x, 0.025), 100 * q(x, 0.975))
+range90 <- function(P) {
+  cdf <- cumsum(colMeans(P))
+  sprintf("%.1f and %.1f", score_grid[which(cdf >= 0.05)[1]], score_grid[which(cdf >= 0.95)[1]])
+}
+
+exp_tab <- bind_rows(lapply(ages_tab, function(a) {
+  Pp <- pm_pool[[as.character(a)]]; Pf <- pm_full[[as.character(a)]]
+  data.frame(
+    Age = a,
+    `Expected score, age only` = cell(Pp %*% score_grid),
+    `Expected score, adjusted` = cell(Pf %*% score_grid),
+    `90% of individuals between (adjusted)` = range90(Pf),
+    `Share scoring 9 or less, age only` = share(rowSums(Pp[, 1:22])),
+    `Share scoring 9 or less, adjusted` = share(rowSums(Pf[, 1:22])),
+    check.names = FALSE
+  )
+}))
+knitr::kable(exp_tab, align = "cccccc")
+```
+
+Read it by columns. The intervals for the *average* are narrow: we know the mean score at each age rather well. The range that holds 90% of individuals at one age is wide, spanning around six points, and the ranges for 55 and 85 overlap almost entirely. Both are true at once, and the paper's figure can only show the first. The "age only" and "adjusted" columns differ in how much of the change they attribute to age: from 55 to 85 the adjusted expected score falls by about `r sprintf("%.1f", mean(pm_full[["55"]] %*% score_grid) - mean(pm_full[["85"]] %*% score_grid))` points, against `r sprintf("%.1f", mean(pm_pool[["55"]] %*% score_grid) - mean(pm_pool[["85"]] %*% score_grid))` for the pooled model.
+
+The last two columns are where I would look if I were a clinician. The cutoff of 9 out of 15 (21 of 35 photos, 60% correct) is mine and it is arbitrary; replace it with the one your clinic uses and rerun the line. Between 55 and 85 the share at or below it goes from `r sprintf("%.0f", 100 * mean(rowSums(pm_pool[["55"]][, 1:22])))`% to `r sprintf("%.0f", 100 * mean(rowSums(pm_pool[["85"]][, 1:22])))`% in the pooled model, and from `r sprintf("%.0f", 100 * mean(rowSums(pm_full[["55"]][, 1:22])))`% to `r sprintf("%.0f", 100 * mean(rowSums(pm_full[["85"]][, 1:22])))`% once we adjust. The adjusted figure at 55 is higher than the pooled one because it keeps the diagnostic mix of the whole sample at every age, patients included, while the pooled line behaves as if a 55-year-old were as healthy as the youngest people we happened to recruit. I have little data on very old people (`r sprintf("%.1f", 100 * mean(mini$age > 90))`% of the sample is older than 90), so I stop the table at 85.
+
+Two more views answer the questions I would ask next. How does the chance that the younger person scores higher grow with the age gap? And, since an interval for a slope is hard to feel, what is the probability that the true loss per decade exceeds a given amount?
+
+```{r}
+#| label: fig-gap-threshold
+#| fig-cap: "Left: probability that a 55-year-old scores higher than someone older by the age gap shown (ties count as half); bands are 95% credible intervals. Right: posterior probability that the true loss per decade exceeds a given number of points; the dashed line marks one photo (15/35 points)."
+#| fig-width: 10
+#| fig-height: 4
+
+gaps <- seq(5, 30, by = 5)
+gap_df <- bind_rows(lapply(c("Age only", "Adjusted"), function(m) {
+  pm <- if (m == "Age only") pm_pool else pm_full
+  ps <- sapply(gaps, function(g) p_higher(pm[["55"]], pm[[as.character(55 + g)]]))
+  data.frame(model = m, gap = gaps, mean = colMeans(ps),
+             lo = apply(ps, 2, q, 0.025), hi = apply(ps, 2, q, 0.975))
+}))
+
+loss_pool <- -eff_pool
+loss_full <- -eff[[3]]
+thr_df <- bind_rows(
+  data.frame(model = "Age only", thr = seq(0, 1.2, by = 0.01)),
+  data.frame(model = "Adjusted", thr = seq(0, 1.2, by = 0.01))
+) |>
+  rowwise() |>
+  mutate(p = mean((if (model == "Age only") loss_pool else loss_full) > thr)) |>
+  ungroup()
+one_photo <- 15 / n_trials
+model_cols <- c("Age only" = unname(cols["bayes"]), "Adjusted" = unname(cols["adj"]))
+
+p_gap <- ggplot(gap_df, aes(gap, mean, colour = model, fill = model)) +
+  geom_hline(yintercept = 0.5, linetype = "dashed") +
+  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.2, colour = NA) +
+  geom_line(linewidth = 1) + geom_point() +
+  scale_colour_manual(values = model_cols) + scale_fill_manual(values = model_cols) +
+  scale_y_continuous(limits = c(0.45, 1), labels = scales::percent) +
+  labs(x = "Age gap (years)", y = "Probability the younger scores higher", colour = NULL, fill = NULL) +
+  Plot_theme
+
+p_thr <- ggplot(thr_df, aes(thr, p, colour = model)) +
+  geom_line(linewidth = 1) +
+  geom_vline(xintercept = one_photo, linetype = "dashed") +
+  scale_colour_manual(values = model_cols) +
+  scale_y_continuous(limits = c(0, 1), labels = scales::percent) +
+  labs(x = "Loss per decade (points, 0-15 scale)", y = "Posterior probability loss is larger", colour = NULL) +
+  Plot_theme
+
+p_gap + p_thr
+```
+
+```{r}
+#| label: GapNumbers
+g10_pool <- gap_df$mean[gap_df$model == "Age only" & gap_df$gap == 10]
+g30_pool <- gap_df$mean[gap_df$model == "Age only" & gap_df$gap == 30]
+g30_full <- gap_df$mean[gap_df$model == "Adjusted" & gap_df$gap == 30]
+```
+
+The left panel is the one I would put in an abstract. In the pooled model, a 10-year gap is a coin that lands on the younger person's side about `r round(100 * g10_pool)`% of the time, and it takes a 30-year gap to reach about `r round(100 * g30_pool)`%, which is the answer to the question I posed earlier. Once we adjust, that 30-year figure is `r round(100 * g30_full)`%. The right panel replaces "the interval excludes zero" with a question you can answer for yourself: how large would a loss have to be to matter to *you*, and how probable is that?
+
+## Does this reduction matter clinically?
+
+I cannot answer that from these data, and I think it is worth being plain about why. Relevance needs an anchor outside the model, and there are several candidates:
+
+- **The test itself.** One photo is 15/35 = `r sprintf("%.2f", one_photo)` points. The pooled estimate is a loss of about `r sprintf("%.1f", mean(loss_pool) * n_trials / 15)` photos per decade, and the adjusted one about `r sprintf("%.1f", mean(loss_full) * n_trials / 15)`. The probability that the loss exceeds one photo per decade is `r sprintf("%.0f", 100 * mean(loss_pool > one_photo))`% in the first case and `r sprintf("%.0f", 100 * mean(loss_full > one_photo))`% in the second.
+- **A known contrast.** Healthy controls score on average `r sprintf("%.1f", mean(mini$fer[mini$dx == "HC"]) - mean(mini$fer[mini$dx == "MCI"]))` points above people with mild cognitive impairment. The pooled loss per decade is about `r sprintf("%.0f", 100 * mean(loss_pool) / (mean(mini$fer[mini$dx == "HC"]) - mean(mini$fer[mini$dx == "MCI"])))`% of that gap; the adjusted one about `r sprintf("%.0f", 100 * mean(loss_full) / (mean(mini$fer[mini$dx == "HC"]) - mean(mini$fer[mini$dx == "MCI"])))`%.
+- **Something that matters to a person.** Does a lower score here go together with worse daily functioning, a missed diagnosis or a change in treatment? Nothing in this data set can say.
+
+So the question stays open, and it is a question for the researcher, not for the model. These are the ones I would ask before writing "decline" in a discussion. How much does one person's score vary between two sessions when nothing in their life has changed? If that spread is larger than the loss across thirty years, an individual's change over time is invisible to the test. What difference on this score has anyone linked to a clinical outcome? And is a small loss shared by everyone a different thing from a larger loss concentrated in a minority (panels 5 and 6 above)? The table and the curves do not decide those questions; they let you ask them with numbers instead of stars.
+
+# Does age improve out-of-sample prediction?
+
+For completeness, we can ask what "predicts" actually implies: does knowing age improve predictions for people the model has not seen? Leave-one-out cross-validation [@vehtari2016] estimates exactly that. We compare six models, with and without age and with and without the other variables.
+
+```{r}
+#| label: LooCompare
+#| results: hide
+
+fit_null <- brm(
+  k | trials(35) ~ 1,
+  data = mini, family = beta_binomial(),
+  prior = c(prior(normal(1, 1.5), class = Intercept), prior(gamma(2, 0.1), class = phi)),
+  chains = 4, cores = 4, iter = 2000, seed = 123,
+  file = "models/Fit_null"
+)
+fit_dx_only <- update(fit_dx, formula. = k | trials(35) ~ dx, seed = 123, file = "models/Fit_dx_only")
+fit_cov <- update(fit_full, formula. = k | trials(35) ~ dx + income + sex + educ5, seed = 123, file = "models/Fit_cov")
+
+# Pointwise log-likelihood of the beta-binomial, written out so that `loo` can use it
+loo_bb <- function(fit, data) {
+  phi <- as_draws_df(fit)$phi
+  mu  <- posterior_epred(fit, newdata = data) / n_trials          # draws x participants
+  k   <- matrix(data$k, nrow(mu), ncol(mu), byrow = TRUE)
+  ll  <- lchoose(n_trials, k) + lbeta(k + mu * phi, n_trials - k + (1 - mu) * phi) -
+    lbeta(mu * phi, (1 - mu) * phi)
+  loo::loo(ll)
+}
+
+loo_all <- loo_compare(list(
+  `intercept only` = loo_bb(fit_null, mini),
+  `age` = loo_bb(fit_pool, mini),
+  `diagnosis` = loo_bb(fit_dx_only, mini),
+  `age + diagnosis` = loo_bb(fit_dx, mini),
+  `diagnosis + income, sex, education` = loo_bb(fit_cov, mini),
+  `age + diagnosis + income, sex, education` = loo_bb(fit_full, mini)
+))
+```
+
+```{r}
+#| label: LooTable
+knitr::kable(round(loo_all[, c("elpd_diff", "se_diff")], 1))
+gain_age <- loo_all["age + diagnosis + income, sex, education", "elpd_diff"] -
+  loo_all["diagnosis + income, sex, education", "elpd_diff"]
+```
+
+Read the table from the top: the best model sits at zero and the others are differences in expected log predictive density, with their standard errors. Age alone, the model behind the paper's sentence, improves on the intercept-only model but is far behind any model that knows the diagnosis. The comparison that matters is the last pair: adding age to a model that already has diagnosis, income class, sex and education changes the score by `r sprintf("%.1f", abs(gain_age))` units, against a standard error of `r sprintf("%.1f", loo_all["diagnosis + income, sex, education", "se_diff"])` for the difference, which is `r sprintf("%.3f", abs(gain_age) / nrow(mini))` per person. Alone, age beats the intercept-only model by a wide margin, and that is the whole content of "significantly predicts". It is a statement about a pooled association, not about a variable that helps us predict anyone once we know the diagnosis.
+
+```{r}
+#| label: Sensitivity
+
+on_grid <- grid_dist < 0.0101
+sens <- data.frame(
+  subset = c("Everyone (n = 998)", "Only scores on the 15/35 grid"),
+  n = c(nrow(mini), sum(on_grid)),
+  `pooled slope` = c(coef(lm(fer ~ age, mini))[2], coef(lm(fer ~ age, mini[on_grid, ]))[2]),
+  `slope + diagnosis` = c(coef(lm(fer ~ age + dx, mini))[2], coef(lm(fer ~ age + dx, mini[on_grid, ]))[2]),
+  check.names = FALSE
+)
+knitr::kable(sens, digits = 3, row.names = FALSE)
+```
+
+The last table is the check I promised on the rounding: restricting the analysis to participants whose score sits on the grid gives a similar pooled slope and a similar drop after adjusting for diagnosis (the table uses plain linear models for speed). The conclusion does not hinge on how I treated the other fifth.
+
+# Where this breaks
+
+- **I do not know how the scores were built.** The conversion to 15 is undocumented in the paper's text, a fifth of the values do not fit the obvious rule, and I rounded them. The sensitivity check above is reassuring, not a substitute for the authors' script.
+- **The beta-binomial is a model, not the truth.** It treats the 35 photos as exchangeable trials, while photos differ in difficulty and a guess among seven emotions is right one time in seven. An item-response model would be closer.
+- **Clustering is missing.** The study spans nine countries and 13 sites; the file has only a two-level income class. A varying intercept by country, `(1 | country)`, is the term I would add with the full data.
+- **Cross-sectional and diagnosis-adjusted.** Differences between older and younger people are not within-person decline, and diagnosis may sit downstream of ageing, so the adjusted slope understates what ageing does and the pooled one overstates what it does *alone*. The truth for "ageing as such" lies somewhere I cannot pin down with these data.
+- **The seven simulated pictures are constructions.** I calibrated them to the real slope and R² to show that these two numbers cannot tell them apart. That shows nothing about which one the data follow, and some (panels 2, 3 and 6) would be visible to the eye.
+- **I did not model the other two outcomes** (mentalizing and total score). The critique of the word "predicted" applies to them too. The likelihood does not transfer directly, though: mentalizing is scored out of 40 points from ten short stories with control questions, which are not 40 independent trials, and the total is the sum of two rescaled scores.
+- **"Predict" has a legitimate statistical meaning.** In the machine-learning part of that paper prediction is evaluated on held-out data, which is what I did with LOO. My objection is to the word in a sentence about an in-sample slope.
+
+# Your turn
+
+- Would you accept "age was associated with a lower score of about half a point per decade (95% CrI …)" in a results section, or do you think the probability that a younger person scores higher is the better single number? I lean towards reporting both, plus the adjusted version, but I can be argued out of it.
+- Which "predicted" sentence in your own field would survive this treatment? Is there an open data set behind it that you could check?
+- Where does your own pipeline convert, harmonise or impute values before they reach the analysis, and is that step written down anywhere a stranger could find it?
+- If you think I am being unfair to a descriptive analysis in a paper whose main models are elsewhere, I want the counter-argument.
+
+I read and answer every comment.
+
+You can find the code and an updated version of this post in the [GitHub repository](https://github.com/daniel-manrique/TDS-Medium_Blog/tree/main/articles/2026-10-27_SignificantlyPredicts).
+
+-   All images, unless otherwise stated, were generated using the displayed R code.
+
+# References
+
+::: {#refs}
+:::
+
+```{r}
+sessionInfo()
+```

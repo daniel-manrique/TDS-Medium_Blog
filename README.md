@@ -37,7 +37,7 @@ All paths inside an article are relative to its own folder (`data/...`, `models/
 
    ```r
    install.packages(c("brms", "tidybayes", "ggdist", "modelr", "patchwork", "easystats",
-                      "dplyr", "tibble", "tidyr", "ggplot2", "ghibli", "gtsummary", "spatstat"))
+                      "dplyr", "tibble", "tidyr", "ggplot2", "ghibli", "gtsummary", "spatstat", "readxl"))
    ```
 3. Render one article, or all of them:
 
