@@ -1,0 +1,111 @@
+---
+title: "We Reward the Paper, Not the Truth: What Publish-or-Perish Teaches Young Scientists"
+subtitle: "Paper mills are a symptom. The disease is a system that pays for output and punishes caution."
+keywords:
+  - Research integrity
+  - Publish or perish
+  - Paper mills
+  - Peer review
+  - Open science
+---
+
+I ask for the raw data, and they do not arrive. As a reviewer this has happened to me more times than I care to count, and at some point the repetition stopped being an annoyance and became a lesson: I was never really being asked to evaluate evidence. I was being asked to evaluate a story, assembled with care by people who knew exactly which parts of it I would be allowed to see, and to vouch for it. A figure is not a finding; a finding is something I can rerun, and nobody was offering me that.
+
+For a long time I treated the missing data as a matter of manners, as if the authors had simply forgotten to attach a file. I now think it is something closer to rational behaviour. In a system that pays for papers, the data are a liability, because they can be checked, and the story is the asset, because it can be sold. Once you see it that way, paper mills stop looking like a malfunction of the scientific machine and start looking like one of its logical products: when a career is priced in papers, someone will always find a cheaper way to manufacture them.
+
+::: {.callout-note}
+## What you'll take away
+
+- Paper mills, vanished raw data and "convenient" results are the same mechanism at different scales: reward output, and output multiplies.
+- Fraud with public money is treated as an administrative matter, not as a crime, and journals verify the story rather than the data.
+- I argue for raw data and open public review, offer four changes I would bet on, and say what remains unsolved.
+:::
+
+# The sentences nobody wrote down
+
+I did not begin to doubt the system because of data that never arrived. The doubt started earlier, when I was a student and later a postdoc, and I kept hearing sentences like these:
+
+- "Nobody has to know that."
+- "We are the ones who decide what we show."
+- "We can set that data point aside."
+- "I need you to find significant differences."
+
+None of them contains the word fraud, and that is exactly what makes them so effective. Each one is a small decision about the story, delivered in the tone of practical advice, by someone who would be surprised to hear it called anything else. The last is the one I find hardest to forgive and easiest to understand, because it asks for the conclusion before the analysis: evidence is supposed to tell you what is true, and here the conclusion arrives first and the data are asked to comply. I am not going to say who said these things or where, because the speaker is not the point. The point is that a young scientist hears them as career advice and not as ethics, that nobody wrote them in a handbook, and that they are the curriculum anyway.
+
+# Pay for output and you select for output
+
+If those sentences were only the failings of a few individuals, the problem would be small and the remedy obvious. I do not think that is what they are. There is an old observation, usually called Goodhart's law, according to which a measure that becomes a target stops being a good measure. Counting papers is a measure; hiring, promotion and funding turned it into a target, and everything that follows is what a target does to the people who are aiming at it.
+
+Smaldino and McElreath showed how this works with a model of competing laboratories [@smaldino2016]. What I find most convincing about their argument is that it needs nobody to cheat: it only needs publication to be a principal factor in career advancement. Laboratories that cut effort produce more publishable results, so they are rewarded, and their graduates carry those methods into the new laboratories they found, until bad methods spread by selection like any trait that pays. The authors note that, after more than 50 years of reviews of low statistical power, they found "no detectable increase" in average power [@smaldino2016]. The cash version of the same logic is easier to see, and it is not subtle: an analysis of 168 policy documents from 100 Chinese universities found cash rewards for papers in Web of Science-indexed journals of between about US\$30 and US\$165,000 per paper [@quan2017]. I am not singling out one country, because I suspect cash is only the visible form of what promotion committees and grant panels do quietly everywhere. If you price papers, you get papers; whether you also get knowledge is a separate question.
+
+# The factory
+
+Once output is the currency, somebody will industrialise it, and the evidence that this has already happened is hard to dismiss. A recent study in PNAS mapped the networks behind the trade, made up of paper mills, brokers and compromised journals [@richardson2025]. As reported by Retraction Watch, the authors estimate that suspected paper-mill output is growing faster than the corrective measures aimed at it, that only 28.7% of the suspected products in their data had been retracted, and that by their extrapolation about a quarter will ever be [@retractionwatch2025mills]. These are estimates built from detection patterns, and the authors themselves consider that they probably underestimate the problem.
+
+The same work shows how the trade finds its way in. It describes 45 editors at one journal who handled 1.3% of its articles but 30.2% of its retracted ones [@retractionwatch2025mills], and the scale becomes visible in the retraction record: in 2023 Hindawi, a Wiley imprint, retracted more than 8,000 articles, more than anything seen in a single year from all publishers combined, much of it from special issues run by guest editors [@retractionwatch2023hindawi]. All of that volume lands, in the end, on peer review. In the debate I wrote with Jamie Trapp and Clive Baldock, the editor of the journal notes that manuscripts submitted there rose from 750 in 2024 to a projected 1,750 in 2026 [@manrique-castano2026]. Review is done by volunteers, and a system whose unpaid capacity to correct is outrun by an industrial capacity to produce is not a quality filter. It is a queue.
+
+# The reputation reflex
+
+When I wrote about the Dana-Farber scandal in February 2024, the case looked to me like a window into the whole system [@manrique-castano2024dana]. A scientist outside the institute, Sholto David, had published evidence of duplicated and manipulated images in dozens of papers by its researchers, and the institute responded by asking for six retractions among the 58 studies he named and for corrections to dozens more [@retractionwatch2025danafarber]. I argued then that universities and journals, with their own reputations at stake, are poor guardians of integrity, and that the work of checking falls to outsiders. I did not know how the story would end.
+
+It ended with a lawsuit. In April 2024 David filed a False Claims Act complaint listing 95 studies, and in December 2025 Dana-Farber agreed to pay \$15 million, with a settlement that states that images and data were "misrepresented and/or duplicated" in support of NIH grant applications and that one principal investigator failed to supervise researchers on 14 papers; David receives 17.5% of the amount [@retractionwatch2025danafarber]. Read that as a student would. The mechanism that finally moved the institution was not an internal review, a journal or an editor, but a lawsuit with money in it, and the person who forced the issue had to be paid to do it. This is one case, and I do not claim that every institution behaves like this one.
+
+Detection, in fact, tends to come from outside. When Elisabeth Bik and colleagues screened 20,621 papers from 40 journals, they found problematic figures in 3.8% of them, at least half with features suggesting deliberate manipulation, and they found them because they looked [@bik2016]. I also owe a correction on that earlier essay, in which I wrote harshly about Marc Tessier-Lavigne. The Stanford panel did not find that he personally engaged in misconduct; it found manipulated data in several papers from his laboratories, and that he should have been more decisive in correcting the record [@stat2023tessier]. He resigned as president, and I should have said all of that more carefully.
+
+# Where is the prosecutor?
+
+Which brings me to the question I cannot stop asking. A public official who diverts taxpayers' money into a corruption scheme can be prosecuted and can go to prison, while a researcher who spends public money to inflate a CV, who falsifies the data that justify that money and who misleads the society that paid for it usually faces a funding ban and a quiet exit. Why are the two cases treated so differently? Let me set the scope before someone sets it for me: I am not talking about honest error, a failed replication or a badly chosen model, because science is made of mistakes. I am talking about fabrication, falsification and knowingly false statements in a grant application, which in plain terms is a false statement made to obtain public money.
+
+The money is public, and the admissions are on the record. In the Dana-Farber settlement the institute acknowledged that misrepresented or duplicated images and data supported NIH grant applications [@retractionwatch2025danafarber]; Duke paid \$112.5 million in 2019 to settle claims that falsified data supported federal grants, and the research coordinator at the centre of that case, Erin Potts-Kant, pleaded guilty to two counts of forgery [@wunc2019duke]. Notice who paid in both cases: the institution. In the Dana-Farber reports I read, I found no criminal charges against any researcher.
+
+And when the law does reach a scientist, it is news. Eric Poehlman pleaded guilty to making a false statement in an NIH application and went to federal prison, reportedly a first in the United States [@wikipedia2006poehlman]. Dong-Pyou Han spiked rabbit blood with human antibodies to make an HIV vaccine look better, and was sentenced to four years and nine months and owed more than \$7 million to the NIH [@cbs2015han]. In Sweden, a court of appeal sentenced the surgeon Paolo Macchiarini to two and a half years in 2023, but for harming patients and not for what he did to the scientific record [@thelocal2023macchiarini]. My reading is that the law reaches bodies and money and treats the scientific record as a private matter. The normal answer is administrative: an analysis of 343 case summaries from the US Office of Research Integrity, from 1993 to 2023, found that the most common sanction was a three-year funding debarment, in 64.7% of cases, and that lifetime debarment was imposed in 1.2% [@long2023].
+
+The degree and the classroom are where the University of Konstanz matters. It had no evidence of wrongdoing in Jan Hendrik Schön's thesis, but it revoked his PhD because, it said, he had brought science into disrepute; a court in Freiburg sided with him in 2010, and the German Federal Constitutional Court confirmed the revocation on 1 October 2014 [@nature2014schon]. I think that reasoning is right, because a doctorate certifies that someone can do independent research honestly and someone who fabricated results has shown otherwise, but it took years in court and I know of no wave of universities following it.
+
+Harvard revoked the tenure of Francesca Gino in May 2025, which the university described as the first such case in decades [@nbc2025gino]. She denies the misconduct and is in litigation, and I mention the case with that in mind; what matters for my argument is how unusual the act is. Whether the people with substantiated findings still teach, I could not establish, because I found no systematic count, and I think that absence is part of the problem. An older study of 43 scientists found guilty by the ORI between 1994 and 2001 reported that, of the 37 with publication data, 19 kept publishing at least once a year [@redman2008]. It is old, but it points in the same direction.
+
+There are limits to this argument, and I would rather state them than have them used against me. Criminal law needs proof of intent, telling fraud from error is hard, and the threat of prison could discourage people from admitting their own mistakes, which is why I limit the question to fabrication and knowingly false statements and why due process matters: Gino contests her case, and in Schön's the Freiburg court read the German "unworthy" clause more narrowly than the courts that followed. What I documented is also slowness, moderate sanctions and settlements paid by institutions, which is not proof that universities deliberately shield fraudsters; when I say they protect their reputation, I am interpreting that pattern. Still, my question remains concrete. How long will knowingly false statements to obtain public funds stay outside the radar of the justice system, and when will we see universities around the world withdraw degrees and remove from the classroom those who fabricated data, instead of absorbing the cost and moving on? I think the answer matters most for the young, because what a student learns about fraud is its price, and the price is close to zero.
+
+# What it teaches the young
+
+That price is paid in a currency we measure badly. A meta-analysis in *Nature Human Behaviour* pooled 228 samples and 138,446 early-career researchers, and found that about 30% reported elevated depressive symptoms and about 30% anxiety symptoms, which is two to three and three to five times the rate in age-matched general-population samples, and that about 19% reported suicidal ideation; the authors list short-term contracts, high competition, isolation and abuse of power among the stressors [@dreisoerner2026]. I want to be careful here, because these data do not show that publish-or-perish causes the distress. They show a population under strain, inside a system I think we designed.
+
+The effect on conduct is also measured. In a survey of 6,813 researchers in the Netherlands, 51.3% said they frequently engaged in at least one questionable research practice, fabrication was reported by 4.3% and falsification by 4.2%, and being a PhD candidate or junior researcher, together with perceiving publication pressure, was associated with more frequent questionable practices [@gopalakrishna2022]. An earlier meta-analysis of surveys had found that about 2% of scientists admitted to fabricating or falsifying data [@fanelli2009]. I believe those numbers are too small, and I do not mean that the surveys are careless: they ask people to report, about themselves, behaviours that the profession does not call misconduct. The sentences I heard are not filed under fraud, or even under questionable practice, by the people who say them; they are simply how things are done. Fanelli saw the gap himself, since when surveys asked about colleagues instead of the respondent the share reporting falsification rose from about 2% to about 14%, and for other questionable practices it reached as high as 72%, and he argued that his estimates were likely conservative [@fanelli2009].
+
+My own evidence is an observation and not a measurement, and people who attend a reproducibility workshop may not represent everyone, but I did not count anything and I do not claim to have. I have given in-person workshops on reproducibility and good practices to neuroscientists from different parts of the world, and in that experience I have found it very rare to meet someone who has not witnessed these actions, or who has not been caught between a rock and a hard place over them. I would welcome anyone who can measure it properly. In the meantime, take one example that changes how I read the numbers: "remove that animal, its value is extreme." It sounds like housekeeping, and there is a legitimate version, since an animal that never developed the ischemia it was supposed to have is an outlier and can be excluded under criteria set in advance. An extreme value that is a legitimate biological response is something else, and dropping it after the fact because it spoils the p-value is not housekeeping.
+
+Think about what that animal is. It is an experimental subject whose use was justified, and paid for with public money, by the knowledge it was supposed to produce, and throwing it out to keep a story tidy wastes the animal, the grant and the time of whoever collected the data, while it serves the comfort of the principal investigator and the publisher. Once you count that as a cost, the number of "cases" is no longer about 4%; it is a stream of small decisions that nobody records. I do not read this as a story about bad people, because I believe most people start in science out of curiosity. But a doctoral student who is told "I need you to find significant differences" is learning what the job actually is, and when virtue costs a job and cutting corners pays, the incentive does the teaching.
+
+# Journals are the worst gatekeepers
+
+This is why, in the debate I wrote with Jamie Trapp and Clive Baldock, I argued that academic journals have outlived their usefulness [@manrique-castano2026]. I still hold that, and I see it as the conclusion of everything above: journals should have no power over what counts as established science. Start with what a journal actually does. Journals do not carry out peer review; scientists do, voluntarily and unpaid [@manrique-castano2026]. And what that process verifies is mostly the story, whether the argument hangs together and whether the figures say what the text says, while it rarely verifies the data, because the data are rarely there. As a reviewer, that is exactly what I lived: I was asked to vouch for a narrative I could not rerun. A story that was supposedly verified is not certainty about anything, because a journal's reputation is a proxy for trust and the data are the thing itself.
+
+The alternative is simpler than it sounds. It means depositing raw data and workflows with the paper, and doing the review in the open, where anyone can read it, check it and answer it, so that evaluating science stops being a private conversation between an editor and two anonymous people. The infrastructure exists already in arXiv, bioRxiv and OSF, and in our debate I argued that the debate itself could have been made public, reviewed and citable with a DOI without going through a publisher [@manrique-castano2026]. Jamie Trapp, who argued the other side, raised the strongest objection I know: journals are bound to ethics guidelines and have to investigate and retract, and an open comment section can degrade into noise [@manrique-castano2026]. He is right that this oversight has to be rebuilt somewhere, and there are real problems to solve, such as who curates, who moderates, how reviewers are protected and who pays. I do not pretend they are solved. But a problem to solve is not a reason to keep a model in which private companies make a lot of money from publicly funded work, researchers inflate their CVs, and the public sees no return.
+
+# Four changes I would bet on
+
+I will not claim that these are proven. They are bets, and I did not review the evidence for reforms, but I think they follow from what I have described.
+
+The first is **raw data before review, not on request**. I have asked for data and received nothing, and I am not alone in saying that data on request is not data [@miyakawa2020]. Today my work is helping researchers deposit their data so others can reuse it, and from that position I think that if a claim comes without data, the claim should wait. The second is to **evaluate people on what can be checked**, replacing paper counts with verifiable outputs such as shared data, code, replications and corrections, so that confidence comes from independent verification and not from the name of a journal. The third is to **pay for verification, and protect those who do it**: if checking the literature is a public good, it should be funded like one, because the most effective check I found in this story was a private lawsuit.
+
+The fourth is to **make substantiated fabrication carry a real cost**. That means investigations led by someone other than the employer, public outcomes and, for fabrication or knowingly false statements to obtain public funds, the consequences a public official would face: a degree withdrawn as Konstanz did, removal from teaching, and prosecution under existing fraud law where the facts support it.
+
+# Your turn
+
+I would like to hear from you on some of this, whatever your field:
+
+- Have you heard a sentence like the four above? You do not need to name anyone. What did it teach you?
+- If you are an early-career researcher: what would you do differently if your contract did not depend on the next paper?
+- Should a substantiated finding of fabrication cost someone their degree and their place in the classroom, as it did at Konstanz? Where would you draw the line between a mistake and a crime?
+- If you think journals are still the least bad way to maintain trust in science, I want your counterargument. What function of a journal cannot be replaced by shared data and open public review?
+
+I read and answer every comment.
+
+You can find the sources and the working copy of this essay in the [GitHub repository](https://github.com/daniel-manrique/TDS-Medium_Blog/tree/main/articles/2026-10-23_PublishOrPerish).
+
+If you want more writing like this, you can follow me on [Medium](https://medium.com/@damanrique) and consider becoming a [Medium member](https://medium.com/membership).
+
+# References
+
+::: {#refs}
+:::
