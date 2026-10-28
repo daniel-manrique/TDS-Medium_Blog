@@ -1,0 +1,572 @@
+---
+title: "Attraction or Absence? Reading Cell–Cell Distances in a Glial Scar"
+subtitle: "Cross-type pair correlation with spatstat and brms, with the animal as the unit of analysis."
+keywords:
+  - Spatial analysis
+  - Point Pattern Analysis (PPA)
+  - Pair correlation function
+  - Glial scar
+  - Bayesian modelling
+---
+
+```{r}
+#| label: LoadPack
+#| include: false
+#| warning: false
+#| message: false
+
+library(brms)
+library(dplyr)
+library(ggplot2)
+library(spatstat)
+library(tidybayes)
+library(tidyr)
+
+Plot_theme <- theme_classic() +
+  theme(
+    plot.title = element_text(size = 16, hjust = 0.5, face = "bold"),
+    axis.line = element_line(colour = "black", linewidth = 1),
+    axis.title = element_text(colour = "black", size = 14),
+    axis.text = element_text(colour = "black", size = 12),
+    strip.text = element_text(size = 12, face = "bold"),
+    legend.title = element_text(colour = "black", face = "bold", size = 12),
+    legend.text = element_text(colour = "black", size = 10)
+  )
+
+# One colour per time point, used in every figure
+DPI_cols <- c("0D" = "#4D4D4D", "5D" = "#D55E00", "15D" = "#009E73", "30D" = "#0072B2")
+
+# Small helpers to write numbers from the results into the text
+f2 <- function(x) sprintf("%.2f", x)
+Nm <- function(pair, dpi, r) Naive_median$g[Naive_median$Pair == pair & Naive_median$DPI == dpi & abs(Naive_median$r - r) < 1e-9]
+Rm <- function(pair, dpi, r) Ratio_median$Ratio[Ratio_median$Pair == pair & Ratio_median$DPI == dpi & abs(Ratio_median$r - r) < 1e-9]
+Sm <- function(pair, method, dpi, col) Summary_df[[col]][Summary_df$Pair == Pair_labels[pair] & grepl(method, Summary_df$Method) & Summary_df$DPI == dpi]
+```
+
+At the end of [Part 2](https://towardsdatascience.com/where-a-cell-sits-matters-more-than-how-many-there-are/) [@manrique-castano2026part2] I told you that the pooled slope between neurons and astrocytes hid a change of sign across the time course after ischemia. A negative slope tempts you to say that astrocytes push neurons away.
+
+I do not think that is what happens in a glial scar. In my understanding, astrocytes can sit among neurons, depending on the time after ischemia. The cells that predominantly occupy the places where neurons have died are microglia, the macrophages that eat dying or damaged cells. Astrocytes build a barrier around that area, which keeps those cleaners and the inflammatory signals out of healthy tissue. The damaged tissue is no longer fit for neuronal survival: nothing repels anything, there is simply nobody left to be close to. The difference has a cost. If I read absence as repulsion, I would hunt for a repulsive signal and design the next cohort of animals around it.
+
+I believe a cross pair correlation curve says less about whether two cell types attract or avoid each other than about where the tissue is gone. To claim an interaction, you first have to remove the structure of the scar and compare against a null that keeps it. The cleanest test is neurons and microglia.
+
+::: {.callout-note}
+## What you'll take away
+
+- What the **cross pair correlation function** measures, and why its "no interaction" value of 1 only holds when cell density is flat.
+- How tissue loss alone produces fake repulsion in a simulation, and how an **inhomogeneous** curve and a **random labelling** reference correct it.
+- How to carry one number per animal into a Bayesian model, and what happens to the apparent repulsion and attraction once the scar is accounted for.
+:::
+
+This is the last post of the series. In [Part 1](https://towardsdatascience.com/introduction-to-spatial-analysis-of-cells-for-neuroscientists-part-1-82bef519ad46/) [@manrique-castano2024part1] we counted cells and smoothed them into density layers; in Part 2 we asked *where* they are. Here I ask how far apart two types sit once *where* is accounted for. I use `spatstat` [@spatstat], `brms` [@brms] and `tidybayes` [@tidybayes], with the data from the protocol and preprint in @manrique-castano2024 and @manrique-castano2023.
+
+# What a pair correlation curve measures
+
+Pick one astrocyte. Draw a thin ring of radius *r* around it and count the microglia inside the ring. Do that for every astrocyte, average, and compare with what you would get if the microglia ignored the astrocytes completely. The ratio, as a function of *r*, is the **cross pair correlation function** $g_{ij}(r)$ [@illian2008; @diggle2013]. If the two types are independent, $g_{ij}(r) = 1$ at every distance; above 1 means attraction or co-clustering, below 1 means avoidance [@illian2008].
+
+The catch is the phrase "ignored the astrocytes". The classical estimator assumes that cell density is the same everywhere in the section (stationarity). When it is not, as in a glial scar, broad changes in density get read as interaction [@illian2008; @diggle2013]. The next section shows that trap with no biology at all.
+
+# A scar with no interaction in it
+
+I need a case where I know the truth. The chunk below simulates a 4 × 4 mm section with a lesion in the middle. In scenario 1, a neuron-like type is depleted at the centre and an independent microglia-like type is dense there. In scenario 2, two types that both gather in the scar are linked by a real attraction: a third of the second type sits within about 30 µm of a first-type point.
+
+```{r}
+#| label: Simulation
+
+set.seed(8807)
+W <- owin(c(0, 4), c(0, 4))
+Dist <- function(x, y) sqrt((x - 2)^2 + (y - 2)^2)
+Lam_neurons <- function(x, y) 120 * (1 - exp(-Dist(x, y)^2 / (2 * 0.8^2)))  # lost at the lesion
+Lam_scar    <- function(x, y) 10 + 90 * exp(-Dist(x, y)^2 / (2 * 0.8^2))    # gathers at the lesion
+
+# Scenario 1: independent types with complementary density
+Neurons_sim   <- rpoispp(Lam_neurons, lmax = 120, win = W)
+Microglia_ind <- rpoispp(Lam_scar, lmax = 100, win = W)
+
+# Scenario 2: same scar density, plus attraction
+Astrocytes_sim <- rpoispp(Lam_scar, lmax = 100, win = W)
+Base  <- rpoispp(function(x, y) 0.7 * Lam_scar(x, y), lmax = 100, win = W)
+Hosts <- Astrocytes_sim[sample(npoints(Astrocytes_sim), round(0.3 * npoints(Base)), replace = TRUE)]
+Microglia_sim <- superimpose(
+  Base,
+  ppp(Hosts$x + rnorm(npoints(Hosts), 0, 0.03), Hosts$y + rnorm(npoints(Hosts), 0, 0.03), window = W),
+  W = W
+)
+```
+
+The simulation leaves four point patterns. This is what the two scenarios look like:
+
+```{r}
+#| label: fig-SimMaps
+#| fig-cap: "Simulated sections. Scenario 1: two independent types with complementary density (a lesion at the centre). Scenario 2: two types that gather in the scar, plus a true attraction between them."
+#| fig-height: 4.5
+#| fig-width: 9
+
+Sim_points <- bind_rows(
+  as.data.frame(Neurons_sim)    %>% mutate(Type = "Neuron-like", Scenario = "Scenario 1: independent"),
+  as.data.frame(Microglia_ind)  %>% mutate(Type = "Microglia-like", Scenario = "Scenario 1: independent"),
+  as.data.frame(Astrocytes_sim) %>% mutate(Type = "Astrocyte-like", Scenario = "Scenario 2: attraction"),
+  as.data.frame(Microglia_sim)  %>% mutate(Type = "Microglia-like", Scenario = "Scenario 2: attraction")
+)
+
+ggplot(Sim_points, aes(x, y, colour = Type)) +
+  geom_point(size = 0.5, alpha = 0.7) +
+  facet_wrap(~Scenario) +
+  scale_colour_manual(values = c("Neuron-like" = "#555555", "Microglia-like" = "#0072B2", "Astrocyte-like" = "#D55E00")) +
+  coord_equal() +
+  labs(title = "Two simulated scars", x = "x (mm)", y = "y (mm)") +
+  Plot_theme
+```
+
+Now I compute the curve two ways. `pcfcross` is the classical estimator with Ripley's isotropic edge correction [@ripley1976; @illian2008]. `pcfcross.inhom` instead weights every pair by the local density of each type [@illian2008]; I pass those densities in as kernel estimates at each point.
+
+```{r}
+#| label: SimCurves
+
+r_sim <- seq(0, 0.4, by = 0.01)
+
+Curves_sim <- function(Xa, Xb, Scenario) {
+  Y <- superimpose(a = Xa, b = Xb, W = W)          # one marked pattern: types "a" and "b"
+  la <- density(unmark(Y[marks(Y) == "a"]), sigma = 0.3, at = "points")
+  lb <- density(unmark(Y[marks(Y) == "b"]), sigma = 0.3, at = "points")
+  Hom <- pcfcross(Y, "a", "b", r = r_sim, correction = "isotropic")
+  Inh <- pcfcross.inhom(Y, "a", "b", lambdaI = la, lambdaJ = lb, r = r_sim, correction = "isotropic")
+  bind_rows(
+    data.frame(r = r_sim, g = Hom$iso, Estimator = "Classical (assumes flat density)"),
+    data.frame(r = r_sim, g = Inh$iso, Estimator = "Inhomogeneous")
+  ) %>% mutate(Scenario = Scenario)
+}
+
+Sim_curves <- bind_rows(
+  Curves_sim(Neurons_sim, Microglia_ind, "Scenario 1: independent"),
+  Curves_sim(Astrocytes_sim, Microglia_sim, "Scenario 2: attraction")
+) %>% filter(r > 0)
+```
+
+**Pause and predict.** In scenario 1 the truth is 1. Where do you expect the classical curve to sit? And in scenario 2, with a real attraction at 30 µm, where do you expect it to fall back to 1?
+
+```{r}
+#| label: fig-SimCurves
+#| fig-cap: "Cross pair correlation in the simulated sections. The dashed line is g = 1 (no interaction)."
+#| fig-height: 5
+#| fig-width: 9
+
+ggplot(Sim_curves, aes(x = r, y = g, colour = Estimator)) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_line(linewidth = 1.2) +
+  facet_wrap(~Scenario) +
+  scale_colour_manual(values = c("#D55E00", "#0072B2")) +
+  coord_cartesian(ylim = c(0, 3.5)) +
+  labs(title = "Missing tissue reads as repulsion", x = "Distance r (mm)", y = "Cross pair correlation g(r)") +
+  Plot_theme + theme(legend.position = "bottom")
+```
+
+In the left panel the two types are independent, yet the classical (orange) curve sits well below 1 at every distance. Read naively, that is repulsion; it is the lesion. In the right panel, the classical curve stays above 1 out to 0.4 mm, far beyond the 30 µm where I put the attraction. The inhomogeneous (blue) curve behaves better: near 1 in scenario 1, and in scenario 2 high at short range and back to about 1 by 0.1 mm. It then settles slightly under 1: in scenario 1 it dips to `r f2(min(Sim_curves$g[Sim_curves$Estimator == "Inhomogeneous" & grepl("Scenario 1", Sim_curves$Scenario)]))`, and in scenario 2 it sits at `r f2(Sim_curves$g[Sim_curves$Estimator == "Inhomogeneous" & grepl("Scenario 2", Sim_curves$Scenario) & abs(Sim_curves$r - 0.4) < 1e-9])` at 0.4 mm. That small bias comes from estimating the densities from the same points we analyse, and it is why I later compare against random labelling instead of against 1.
+
+# The data
+
+I use the same hyperframe as in Parts 1 and 2, with one point pattern per animal for neurons, astrocytes and microglia, in millimetres. The chunk loads it and counts the cells per section.
+
+```{r}
+#| label: LoadData
+
+PointPatterns <- readRDS("data/PointPatterns_5x.rds")
+row.names(PointPatterns) <- PointPatterns$ID
+PointPatterns$DPI <- factor(PointPatterns$DPI, levels = c("0D", "5D", "15D", "30D"))
+
+Info_df <- data.frame(
+  ID = PointPatterns$ID, DPI = PointPatterns$DPI,
+  Neurons    = unlist(with(PointPatterns, npoints(Neurons))),
+  Astrocytes = unlist(with(PointPatterns, npoints(Astrocytes))),
+  Microglia  = unlist(with(PointPatterns, npoints(Microglia))),
+  Area = sapply(PointPatterns$Neurons, function(x) area(Window(x)))
+)
+```
+
+There are `r nrow(Info_df)` animals, in groups of `r paste(table(Info_df$DPI), collapse = ", ")` at 0D, 5D, 15D and 30D, and each window is an irregular polygon of `r round(min(Info_df$Area))`–`r round(max(Info_df$Area))` mm². Here is one animal at 5D:
+
+```{r}
+#| label: fig-ExampleAnimal
+#| fig-cap: "Neurons, astrocytes and microglia in one animal at 5D (M01). Each dot is a detected cell."
+#| fig-height: 5
+#| fig-width: 14
+
+Example_df <- bind_rows(
+  as.data.frame(PointPatterns$Neurons$M01)    %>% mutate(Type = "Neurons"),
+  as.data.frame(PointPatterns$Astrocytes$M01) %>% mutate(Type = "Astrocytes"),
+  as.data.frame(PointPatterns$Microglia$M01)  %>% mutate(Type = "Microglia")
+) %>% mutate(Type = factor(Type, levels = c("Neurons", "Astrocytes", "Microglia")))
+
+ggplot(Example_df, aes(x, y)) +
+  geom_point(size = 0.6, alpha = 0.7, colour = "#D55E00") +
+  facet_wrap(~Type, nrow = 1) +
+  coord_equal() +
+  labs(title = "One animal, three cell types", x = "x (mm)", y = "y (mm)") +
+  Plot_theme
+```
+
+Look at the gaps between the neuron clusters and at which panel fills them. In this animal the astrocytes mostly follow the neuron clusters, while the microglia also occupy much of the space between them. That is the pattern I want to put numbers on, so I use three pairs. **Neurons–microglia** is the cleanest test of absence. **Neurons–astrocytes** is where the arrangement depends on the time after ischemia. **Astrocytes–microglia** is where I expected a real attraction. In Part 2 I asked which pair to start with; no votes came in, so I decided.
+
+I summarise each curve over one band, 30 to 100 µm, and I did not vary it; the *Try it* below does. In my experience, segmenting neurons (NeuN) is easier than astrocytes (GFAP) or microglia (IBA1), and below about 30 µm a fragment of one astrocyte counted as two cells would look like attraction; that is the lower limit. It reduces that problem but does not remove it: a fragmentation that depends on the region would not cancel in the reference I introduce later. The upper limit stays under the 0.2 mm smoothing scale and well inside the rule that *r* should not exceed a quarter of the shorter side of the window [@diggle2013]. Four small functions do the work:
+
+```{r}
+#| label: Setup_pcf
+
+r_grid <- seq(0, 0.3, by = 0.005)
+Band   <- r_grid >= 0.03 & r_grid <= 0.10
+
+Pairs <- list(NeuMic = c("Neurons", "Microglia"), NeuAst = c("Neurons", "Astrocytes"), AstMic = c("Astrocytes", "Microglia"))
+Pair_labels <- c(NeuMic = "Neurons – microglia", NeuAst = "Neurons – astrocytes", AstMic = "Astrocytes – microglia")
+
+# Stack two cell types of the same animal into one marked pattern ("a" and "b")
+Make_Y <- function(i, Pair) {
+  Xa <- PointPatterns[[Pair[1]]][[i]]
+  Xb <- PointPatterns[[Pair[2]]][[i]]
+  superimpose(a = Xa, b = Xb, W = Window(Xa))
+}
+
+# Classical estimator
+G_hom <- function(Y) pcfcross(Y, "a", "b", r = r_grid, correction = "isotropic")$iso
+
+# Density at each cell from a Gaussian kernel (leave-one-out), with a floor so that
+# isolated cells in empty regions do not receive weights that explode
+Point_intensity <- function(X, sigma, floor_frac) {
+  l <- density(unmark(X), sigma = sigma, at = "points")
+  pmax(l, floor_frac * npoints(X) / area(Window(X)))
+}
+
+# Inhomogeneous estimator
+G_inhom <- function(Y, sigma = 0.2, floor_frac = 0.05) {
+  pcfcross.inhom(Y, "a", "b",
+                 lambdaI = Point_intensity(Y[marks(Y) == "a"], sigma, floor_frac),
+                 lambdaJ = Point_intensity(Y[marks(Y) == "b"], sigma, floor_frac),
+                 r = r_grid, correction = "isotropic")$iso
+}
+```
+
+`Make_Y` builds the pattern for a pair, `G_hom` is the classical curve, and `G_inhom` is the density-weighted one. The floor is a choice of mine, and I test it later.
+
+# The naive curve: one estimator, flat density
+
+First the classical estimator, one curve per animal and pair:
+
+```{r}
+#| label: Naive_curves
+
+Naive_df <- bind_rows(lapply(names(Pairs), function(p) {
+  bind_rows(lapply(seq_len(nrow(PointPatterns)), function(i) {
+    data.frame(Pair = p, ID = PointPatterns$ID[i], DPI = PointPatterns$DPI[i],
+               r = r_grid, g = G_hom(Make_Y(i, Pairs[[p]])))
+  }))
+})) %>%
+  filter(r > 0) %>%
+  mutate(Pair = factor(Pair, levels = names(Pairs)))
+```
+
+`Naive_df` has one row per animal, pair and distance. Look at the thick median lines against the dashed line, and at whether they come back to it:
+
+```{r}
+#| label: fig-NaiveCurves
+#| fig-cap: "Classical cross pair correlation, one thin line per animal and the median as a thick line. Dashed line: g = 1. The shaded band is the 30 to 100 µm range summarised later. The y-axis is cut at 3."
+#| fig-height: 8.5
+#| fig-width: 10
+
+Naive_median <- Naive_df %>% group_by(Pair, DPI, r) %>% summarise(g = median(g), .groups = "drop")
+
+ggplot(Naive_df, aes(x = r, y = g, colour = DPI)) +
+  annotate("rect", xmin = 0.03, xmax = 0.10, ymin = -Inf, ymax = Inf, alpha = 0.12) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_line(aes(group = ID), alpha = 0.3) +
+  geom_line(data = Naive_median, linewidth = 1.5) +
+  facet_grid(Pair ~ DPI, labeller = labeller(Pair = Pair_labels)) +
+  scale_colour_manual(values = DPI_cols, guide = "none") +
+  coord_cartesian(ylim = c(0, 3)) +
+  labs(title = "Classical curves tell three stories", x = "Distance r (mm)", y = "Cross pair correlation g(r)") +
+  Plot_theme
+```
+
+For neurons–microglia (top row), the median curve sits well below 1 at 15D and 30D at every distance (`r f2(Nm("NeuMic", "15D", 0.06))` and `r f2(Nm("NeuMic", "30D", 0.06))` at 60 µm). At face value that is strong repulsion, though a curve that never returns to 1 is the signature we saw in the simulation. For neurons–astrocytes (middle row) it is above 1 at 5D (`r f2(Nm("NeuAst", "5D", 0.06))`) and below 1 at 30D (`r f2(Nm("NeuAst", "30D", 0.06))`). For astrocytes–microglia (bottom row) it is above 1 at 15D and 30D (`r f2(Nm("AstMic", "15D", 0.06))` and `r f2(Nm("AstMic", "30D", 0.06))`), still `r f2(Nm("AstMic", "30D", 0.3))` at 0.3 mm. That is three stories, and I doubt that all three are interactions.
+
+# The better curve: remove the scar, keep a fair reference
+
+The inhomogeneous estimator assumes that, once local densities are accounted for, the interaction depends only on distance [@illian2008]. If the interaction range itself changes with density, that assumption fails, and @illian2008 describe a local rescaling alternative that I did not use. I distrust the estimator for two more reasons. The densities come from the same points we analyse, so a tight kernel lets every cell contribute to its own density and pushes the curve down [@diggle2013; @illian2008]. And in a scar, isolated cells sit in nearly empty regions where the density is near zero and the weight explodes; hence the floor.
+
+Both problems depend on my choices of `sigma` and floor, and I do not want a conclusion that depends on them. So I add a reference that carries the same biases: **random labelling** [@diggle2013; @illian2008]. Think of the section as a lecture hall with fixed seats. Random labelling keeps every occupied seat where it is and only shuffles who is a neuron and who is a microglia; the empty rows, which are the lesion, stay empty. I recompute the inhomogeneous curve on 99 shuffles per animal and pair, and use the ratio between the observed curve and the average shuffled curve. A ratio of 1 means "as if the types were interchangeable given where the cells are". That is a specific question, and not the same as asking whether the types are independent.
+
+One warning from @loosmore2006: a band of simulated curves is a drawing aid, not a test, because looking at many distances at once inflates false positives. So I do not read an interaction at any distance from a band, and I summarise each animal with one number instead. @diggle2013 describes a design-based alternative for replicated patterns, permuting residual functions at the animal level; I chose `brms` for continuity with the series, which is a different route and not a validated equivalent. The next chunk is the slow part, so the first run is cached in `models/`:
+
+```{r}
+#| label: RandomLabelling
+
+Cached <- function(file, expr) {
+  if (file.exists(file)) return(readRDS(file))
+  x <- expr
+  saveRDS(x, file)
+  x
+}
+
+# For one pair: observed curves for every animal, plus the mean curve over n_sim shuffles
+Run_pair <- function(Pair, n_sim, sigma = 0.2, floor_frac = 0.05) {
+  lapply(seq_len(nrow(PointPatterns)), function(i) {
+    Y <- Make_Y(i, Pair)
+    Null <- replicate(n_sim, {
+      Z <- Y
+      marks(Z) <- sample(marks(Y))      # shuffle the type labels, keep the positions
+      G_inhom(Z, sigma, floor_frac)
+    })
+    list(ID = PointPatterns$ID[i], DPI = PointPatterns$DPI[i],
+         Hom = G_hom(Y), Inh = G_inhom(Y, sigma, floor_frac), Null = rowMeans(Null))
+  })
+}
+
+# One cache file per pair, each with its own seed
+Main_runs <- lapply(names(Pairs), function(p) {
+  Cached(paste0("models/RandomLabelling_", p, ".rds"), {
+    set.seed(8807)
+    Run_pair(Pairs[[p]], n_sim = 99)
+  })
+})
+names(Main_runs) <- names(Pairs)
+```
+
+`Main_runs` now holds, for each pair and animal, the classical curve, the inhomogeneous curve and the shuffled reference. The next chunk turns them into a ratio curve and, for the models, into one number per animal.
+
+```{r}
+#| label: Animal_summary
+
+Curves_df <- bind_rows(lapply(names(Main_runs), function(p) {
+  bind_rows(lapply(Main_runs[[p]], function(x) {
+    data.frame(Pair = p, ID = x$ID, DPI = x$DPI, r = r_grid,
+               Hom = x$Hom, Inh = x$Inh, Null = x$Null)
+  }))
+})) %>%
+  mutate(Ratio = Inh / Null, Pair = factor(Pair, levels = names(Pairs))) %>%
+  filter(r > 0)
+
+# One number per animal and method, on the log2 scale (0 = no interaction)
+Animal_df <- Curves_df %>%
+  filter(r >= 0.03, r <= 0.10) %>%
+  group_by(Pair, ID, DPI) %>%
+  summarise(Naive_log2 = log2(mean(Hom)),
+            Corrected_log2 = log2(mean(Inh) / mean(Null)),
+            .groups = "drop")
+
+stopifnot(all(is.finite(Animal_df$Naive_log2)), all(is.finite(Animal_df$Corrected_log2)))
+```
+
+`Animal_df` has one row per animal and pair. Now the same figure as before, with the ratio on the y-axis:
+
+```{r}
+#| label: fig-CorrectedCurves
+#| fig-cap: "Inhomogeneous cross pair correlation relative to random labelling (ratio of the observed curve to the mean of 99 shuffles). One thin line per animal, median as a thick line. Dashed line: 1 = as if the two types were interchangeable. The y-axis is cut at 3."
+#| fig-height: 8.5
+#| fig-width: 10
+
+Ratio_median <- Curves_df %>% group_by(Pair, DPI, r) %>% summarise(Ratio = median(Ratio), .groups = "drop")
+
+ggplot(Curves_df, aes(x = r, y = Ratio, colour = DPI)) +
+  annotate("rect", xmin = 0.03, xmax = 0.10, ymin = -Inf, ymax = Inf, alpha = 0.12) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_line(aes(group = ID), alpha = 0.3) +
+  geom_line(data = Ratio_median, linewidth = 1.5) +
+  facet_grid(Pair ~ DPI, labeller = labeller(Pair = Pair_labels)) +
+  scale_colour_manual(values = DPI_cols, guide = "none") +
+  coord_cartesian(ylim = c(0, 3)) +
+  labs(title = "Against random labelling, most curves move toward 1", x = "Distance r (mm)", y = "g(r), observed / random labelling") +
+  Plot_theme
+```
+
+The picture changed. For neurons–microglia, the 15D and 30D curves moved much closer to 1: `r f2(Rm("NeuMic", "15D", 0.06))` and `r f2(Rm("NeuMic", "30D", 0.06))` at 60 µm, against `r f2(Nm("NeuMic", "15D", 0.06))` and `r f2(Nm("NeuMic", "30D", 0.06))` before. Neurons–astrocytes stays below 1 at every time point (`r f2(Rm("NeuAst", "5D", 0.06))` at 5D). For astrocytes–microglia, 15D and 30D now stay close to 1 (`r f2(Rm("AstMic", "15D", 0.06))` and `r f2(Rm("AstMic", "30D", 0.06))`) and 5D is clearly below it (`r f2(Rm("AstMic", "5D", 0.06))`). The classical "attraction" is gone.
+
+# From curves to an estimate with uncertainty
+
+Cells are not independent observations; animals are. So each animal contributes one number per pair: the log2 of the band average, for the classical curve ("naive") and for the corrected ratio. Zero means no interaction, +1 means twice the expected association and −1 means half. As in Part 2, I fit a Student-t model with the variance depending on DPI, one per pair and method, with the default `brms` priors. With `r paste(table(Info_df$DPI), collapse = ", ")` animals per group the priors are not irrelevant, and I did not run a prior sensitivity check. The 0D group is also thin, with `r min(Info_df$Astrocytes[Info_df$DPI == "0D"])`–`r max(Info_df$Astrocytes[Info_df$DPI == "0D"])` astrocytes and `r min(Info_df$Microglia[Info_df$DPI == "0D"])`–`r max(Info_df$Microglia[Info_df$DPI == "0D"])` microglia per section, so expect wide intervals there.
+
+```{r}
+#| label: Fits
+#| results: hide
+
+Fit_one <- function(Pair, Outcome, File) {
+  brm(bf(as.formula(paste(Outcome, "~ DPI")), sigma ~ DPI),
+      family = student, data = filter(Animal_df, Pair == !!Pair),
+      seed = 8807, control = list(adapt_delta = 0.99),
+      file = File, file_refit = "never", silent = 2, refresh = 0)
+}
+
+Fit_grid <- expand.grid(Pair = names(Pairs), Method = c("Naive", "Corrected"), stringsAsFactors = FALSE)
+Fits <- lapply(seq_len(nrow(Fit_grid)), function(k) {
+  Fit_one(Fit_grid$Pair[k], paste0(Fit_grid$Method[k], "_log2"),
+          paste0("models/", Fit_grid$Pair[k], "_", Fit_grid$Method[k], "_Fit"))
+})
+names(Fits) <- paste(Fit_grid$Pair, Fit_grid$Method, sep = "_")
+```
+
+That fits six models. Before reading any of them, I check that the chains converged:
+
+```{r}
+#| label: Diagnostics
+
+Diag_df <- bind_rows(lapply(names(Fits), function(n) {
+  s <- as.data.frame(summary(Fits[[n]])$fixed)
+  data.frame(Model = n, Max_Rhat = max(s$Rhat), Min_Bulk_ESS = min(s$Bulk_ESS),
+             Min_Tail_ESS = min(s$Tail_ESS),
+             Divergences = rstan::get_num_divergent(Fits[[n]]$fit))
+}))
+
+knitr::kable(Diag_df, digits = 3, caption = "Convergence diagnostics for the population-level parameters.")
+```
+
+The largest R-hat is `r f2(max(Diag_df$Max_Rhat))`, the smallest effective sample size is `r round(min(Diag_df$Min_Bulk_ESS))` (bulk) and `r round(min(Diag_df$Min_Tail_ESS))` (tail), and there are `r sum(Diag_df$Divergences)` divergent transitions. Next, whether the corrected models can reproduce their own data:
+
+```{r}
+#| label: fig-PPCheck
+#| fig-cap: "Posterior predictive checks for the corrected models (observed: dark line; draws: light lines)."
+#| fig-subcap:
+#|   - "Neurons – microglia"
+#|   - "Neurons – astrocytes"
+#|   - "Astrocytes – microglia"
+#| layout-ncol: 3
+#| fig-height: 3.8
+#| fig-width: 5.4
+
+pp_check(Fits$NeuMic_Corrected, ndraws = 50) + Plot_theme
+pp_check(Fits$NeuAst_Corrected, ndraws = 50) + Plot_theme
+pp_check(Fits$AstMic_Corrected, ndraws = 50) + Plot_theme
+```
+
+The dark line should sit inside the cloud of light lines, and it does for the centre of each distribution. The draws are wider and heavier-tailed than the data, which is what a Student-t likelihood gives with this few animals, and the small bump on the left of the astrocytes–microglia panel is the 0D group. I see no sign that the models miss the bulk of the data. Now the posteriors, naive against corrected:
+
+```{r}
+#| label: Posteriors
+
+Grid <- tibble(DPI = factor(levels(Animal_df$DPI), levels = levels(Animal_df$DPI)))
+
+Draws_df <- bind_rows(lapply(names(Fits), function(n) {
+  add_epred_draws(Grid, Fits[[n]]) %>%
+    mutate(Pair = factor(sub("_.*", "", n), levels = names(Pairs)), Method = sub(".*_", "", n))
+})) %>%
+  mutate(Method = factor(Method, levels = c("Naive", "Corrected"),
+                         labels = c("Naive (classical)", "Corrected (inhomogeneous, vs random labelling)")))
+```
+
+```{r}
+#| label: fig-Posteriors
+#| fig-cap: "Posterior log2 association by time point, for the naive and the corrected analysis. Zero means no interaction; positive values mean attraction, negative values mean avoidance."
+#| fig-height: 9.5
+#| fig-width: 10
+
+ggplot(Draws_df, aes(x = .epred, y = DPI, fill = DPI)) +
+  stat_halfeye() +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  facet_grid(Pair ~ Method, labeller = labeller(Pair = Pair_labels)) +
+  scale_fill_manual(values = DPI_cols, guide = "none") +
+  labs(title = "Naive versus corrected association", x = "log2 association (0 = no interaction)", y = NULL) +
+  Plot_theme
+```
+
+```{r}
+#| label: PosteriorSummary
+
+Summary_df <- Draws_df %>%
+  group_by(Pair, Method, DPI) %>%
+  summarise(Median = median(.epred), Lower = quantile(.epred, 0.025), Upper = quantile(.epred, 0.975),
+            P_below_0 = mean(.epred < 0), .groups = "drop") %>%
+  mutate(Pair = Pair_labels[as.character(Pair)])
+
+knitr::kable(Summary_df, digits = 2,
+             caption = "Posterior median, 95% credible interval and probability that the association is below zero.")
+```
+
+Read the naive column first. For neurons–microglia the median is `r f2(Sm("NeuMic", "Naive", "15D", "Median"))` at 15D and `r f2(Sm("NeuMic", "Naive", "30D", "Median"))` at 30D, about `r f2(2^Sm("NeuMic", "Naive", "30D", "Median"))` times the pairs expected at 30D: repulsion by any standard. For astrocytes–microglia it is `r f2(Sm("AstMic", "Naive", "15D", "Median"))` and `r f2(Sm("AstMic", "Naive", "30D", "Median"))`: attraction by any standard. For neurons–astrocytes at 5D it is `r f2(Sm("NeuAst", "Naive", "5D", "Median"))`.
+
+Now the corrected column, the one I trust. For neurons–microglia, more than half of the repulsion was absence. At 15D the median goes from `r f2(Sm("NeuMic", "Naive", "15D", "Median"))` to `r f2(Sm("NeuMic", "Corrected", "15D", "Median"))` (95% CrI `r f2(Sm("NeuMic", "Corrected", "15D", "Lower"))` to `r f2(Sm("NeuMic", "Corrected", "15D", "Upper"))`), and at 30D from `r f2(Sm("NeuMic", "Naive", "30D", "Median"))` to `r f2(Sm("NeuMic", "Corrected", "30D", "Median"))` (`r f2(Sm("NeuMic", "Corrected", "30D", "Lower"))` to `r f2(Sm("NeuMic", "Corrected", "30D", "Upper"))`). What remains is a modest segregation, about `r f2(2^Sm("NeuMic", "Corrected", "15D", "Median"))` and `r f2(2^Sm("NeuMic", "Corrected", "30D", "Median"))` times the pairs that random labelling predicts. Neurons–astrocytes flips sign at 5D: the corrected median is `r f2(Sm("NeuAst", "Corrected", "5D", "Median"))` (`r f2(Sm("NeuAst", "Corrected", "5D", "Lower"))` to `r f2(Sm("NeuAst", "Corrected", "5D", "Upper"))`), and the probability of being below zero is at least `r f2(min(Sm("NeuAst", "Corrected", "0D", "P_below_0"), Sm("NeuAst", "Corrected", "5D", "P_below_0"), Sm("NeuAst", "Corrected", "15D", "P_below_0"), Sm("NeuAst", "Corrected", "30D", "P_below_0")))` at every time point.
+
+For astrocytes–microglia, the corrected median at 30D is `r f2(Sm("AstMic", "Corrected", "30D", "Median"))` (`r f2(Sm("AstMic", "Corrected", "30D", "Lower"))` to `r f2(Sm("AstMic", "Corrected", "30D", "Upper"))`): no association at 30–100 µm. At 15D it is `r f2(Sm("AstMic", "Corrected", "15D", "Median"))` (`r f2(Sm("AstMic", "Corrected", "15D", "Lower"))` to `r f2(Sm("AstMic", "Corrected", "15D", "Upper"))`), an interval that just reaches zero. At 5D it is `r f2(Sm("AstMic", "Corrected", "5D", "Median"))` (`r f2(Sm("AstMic", "Corrected", "5D", "Lower"))` to `r f2(Sm("AstMic", "Corrected", "5D", "Upper"))`), and all `r sum(Animal_df$Pair == "AstMic" & Animal_df$DPI == "5D" & Animal_df$Corrected_log2 < 0)` animals at 5D are negative. At 0D the intervals are wide, with so few astrocytes and microglia.
+
+# Comparing the two analyses
+
+I do not compare the naive and corrected models with `loo`: they model different outcomes, so their scores are not on the same scale. My criterion is the simulation, where the classical curve called repulsion in scenario 1 and the corrected one did not. The data add stability: if the corrected result were an artefact of my `sigma` and floor, it should move when I move them. The chunk below repeats the analysis with a tighter and a wider kernel and a higher floor, with 19 shuffles per animal for speed, so the table shows group medians, not posteriors.
+
+```{r}
+#| label: Sensitivity
+
+Specs <- data.frame(sigma = c(0.1, 0.4, 0.2), floor_frac = c(0.05, 0.05, 0.10))
+
+set.seed(8807)
+Sens_df <- Cached("models/RandomLabelling_Sensitivity.rds", {
+  bind_rows(lapply(seq_len(nrow(Specs)), function(k) {
+    bind_rows(lapply(names(Pairs), function(p) {
+      Runs <- Run_pair(Pairs[[p]], n_sim = 19, sigma = Specs$sigma[k], floor_frac = Specs$floor_frac[k])
+      bind_rows(lapply(Runs, function(x) {
+        data.frame(Pair = p, ID = x$ID, DPI = x$DPI,
+                   Corrected_log2 = log2(mean(x$Inh[Band]) / mean(x$Null[Band])),
+                   Spec = paste0("sigma = ", Specs$sigma[k], ", floor = ", Specs$floor_frac[k]))
+      }))
+    }))
+  }))
+})
+
+Sens_table <- bind_rows(
+  Animal_df %>% transmute(Pair, DPI, Corrected_log2, Spec = "sigma = 0.2, floor = 0.05 (main)"),
+  Sens_df
+) %>%
+  group_by(Pair, DPI, Spec) %>%
+  summarise(Median = median(Corrected_log2), .groups = "drop") %>%
+  pivot_wider(names_from = Spec, values_from = Median) %>%
+  mutate(Pair = Pair_labels[as.character(Pair)])
+
+knitr::kable(Sens_table, digits = 2,
+             caption = "Median log2 association per time point under different kernel widths and density floors.")
+```
+
+```{r}
+#| label: SensitivityRanges
+#| include: false
+
+Sens_range <- function(pair, dpi) {
+  row <- Sens_table[Sens_table$Pair == Pair_labels[pair] & Sens_table$DPI == dpi, -(1:2)]
+  range(unlist(row))
+}
+```
+
+Look at the sign in each row. For neurons–microglia, every specification is negative at 15D (`r f2(Sens_range("NeuMic", "15D")[1])` to `r f2(Sens_range("NeuMic", "15D")[2])`) and at 30D (`r f2(Sens_range("NeuMic", "30D")[1])` to `r f2(Sens_range("NeuMic", "30D")[2])`). For neurons–astrocytes, every specification is negative at every time point (at 5D, `r f2(Sens_range("NeuAst", "5D")[1])` to `r f2(Sens_range("NeuAst", "5D")[2])`). For astrocytes–microglia, 5D is negative throughout (`r f2(Sens_range("AstMic", "5D")[1])` to `r f2(Sens_range("AstMic", "5D")[2])`) and 30D runs from `r f2(Sens_range("AstMic", "30D")[1])` to `r f2(Sens_range("AstMic", "30D")[2])`, so my data support no direction there. The size of the effect moves with my choices, especially at 0D; the signs I rely on do not. That does not make the corrected analysis right, only more stable than the classical one.
+
+**Try it.** Change `Band` to 0.02–0.15 mm or `floor_frac` to 0.2, delete the matching files in `models/`, render again, and tell me whether neurons–microglia at 15D keeps its sign.
+
+## What I expected, and what I found
+
+The best objection is that dividing out the local density deletes the scar, and the scar is the biology: microglia piling up in the astrocyte-rich barrier *is* the interaction. I agree that it is biology, which is why Part 2 exists. The first-order analysis answers *where* each type is; the second-order one asks whether, given where, the two sit closer or farther than chance at tens of micrometres. One answer does not stand in for the other.
+
+I went in with two pieces of biology. First, microglia occupy the places where neurons have died, clearing them. That held, with a twist: more than half of the classical repulsion was absence, and what remains is a modest segregation. I cannot tell whether microglia moved into space that neurons had left or whether the two types also avoid sharing a few tens of micrometres. Second, in my understanding, astrocytes wall off the damaged area, so I expected the two glial types to sit close together where the barrier forms. That did not show up at 30–100 µm; the concentration of microglia in astrocyte-rich compartments in Part 2 is a statement about hundreds of micrometres. What the corrected curve does show is avoidance at 5D. A barrier is a boundary, and a boundary separates: if astrocytes are still forming a ring around microglia that are clearing the damage, the two types would sit apart at tens of micrometres. That is my reading, and these data do not test it.
+
+Neurons and astrocytes behave differently. The change of sign in Part 2 fits astrocytes sharing space with neurons at some stages, yet at tens of micrometres they are less associated than a shuffle would give, at every time point. Both can be true: astrocytes can share a region with neurons and still occupy different micro-patches inside it. I would not read the negative value as pure biology, though. It can also carry excluded volume between cell bodies and detection effects, and I cannot rule out that dense GFAP or IBA1 signal makes neurons harder to detect nearby. And because the density layers cannot resolve structure finer than about 0.2 mm, "avoidance" here means beyond that smooth background.
+
+A fixed section cannot show cells moving, so microglia clearing the places where neurons died, and astrocytes walling off the damage, remain explanations I find plausible rather than something these data confirm or refute. These sections come from different animals, so I cannot say what moved where.
+
+# The series in three lines
+
+- **Part 1:** how many cells there are, and how to turn them into a density layer.
+- **Part 2:** where they are, and what one layer tells us about another.
+- **Part 3:** how close they are, once we have taken *where* into account.
+
+Each part corrected the one before. The pooled slope of Part 1 hid a change of sign in Part 2, and here a good part of the repulsion and the attraction read by the classical curve dissolved into absence. I find that a good reason to look at the arrangement of cells before the count.
+
+# Your turn
+
+- Would you correct for the scar before asking about interaction, or do you treat the scar as part of the interaction? What would change your mind?
+- Which pair of markers in your own tissue has the "absence or avoidance?" problem? Nothing here is specific to glia: an ecologist swaps neurons for a habitat that was cleared, an epidemiologist for a neighbourhood that was demolished.
+- If you think random labelling is the wrong reference for damaged tissue, I want your counterargument.
+
+I read and answer every comment.
+
+You can find the code, data and an updated version of this post in the [GitHub repository](https://github.com/daniel-manrique/TDS-Medium_Blog/tree/main/articles/2026-10-23_SpatialAnalysis_Part3).
+
+-   All images, unless otherwise stated, were generated using the displayed R code.
+
+# References
+
+::: {#refs}
+:::
+
+```{r}
+sessionInfo()
+```
