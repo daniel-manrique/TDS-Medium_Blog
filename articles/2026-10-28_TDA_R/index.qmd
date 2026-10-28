@@ -1,0 +1,478 @@
+---
+title: "Persistent Homology Sees What Pair Correlation Cannot. A Null Model Decides If It Matters."
+subtitle: "TDA in R for any point cloud, calibrated against simulated nulls. Worked example: cells in a glial scar after ischemia."
+keywords:
+  - Topological data analysis
+  - Persistent homology
+  - Point Pattern Analysis (PPA)
+  - Point clouds
+  - Spatial statistics
+  - Bayesian modelling
+---
+
+```{r}
+#| label: LoadPack
+#| include: false
+#| warning: false
+#| message: false
+
+library(brms)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(spatstat)
+library(tidybayes)
+library(tidyr)
+library(TDA)
+
+Plot_theme <- theme_classic() +
+  theme(
+    plot.title = element_text(size = 16, hjust = 0.5, face = "bold"),
+    axis.line = element_line(colour = "black", linewidth = 1),
+    axis.title = element_text(colour = "black", size = 14),
+    axis.text = element_text(colour = "black", size = 12),
+    strip.text = element_text(size = 12, face = "bold"),
+    legend.title = element_text(colour = "black", face = "bold", size = 12),
+    legend.text = element_text(colour = "black", size = 10)
+  )
+
+# One colour per time point, used in every figure
+DPI_cols <- c("0D" = "#4D4D4D", "5D" = "#D55E00", "15D" = "#009E73", "30D" = "#0072B2")
+Type_cols <- c("H0" = "#0072B2", "H1" = "#D55E00")
+
+# Small helpers to write numbers from the results into the text
+f2 <- function(x) sub("^-0\\.00$", "0.00", sprintf("%.2f", x))
+pct <- function(x) sprintf("%.0f%%", 100 * x)
+less <- function(log2_ratio) pct(1 - 2^log2_ratio)   # log2 ratio -> "x% less than the null"
+```
+
+Take two point clouds with exactly the same pair correlation function. On paper they are the same pattern: the curve cannot tell them apart. In the simulation below, a test built on persistent homology tells them apart in 79% of the realisations, while the test I built on the K function flags 6%, which is about the rate at which it raises a false alarm. That is the case for learning topological data analysis (TDA).
+
+Then I ran the same machinery on the positions of cells in a glial scar after ischemia, my own field, and most of what looked like shape turned out to be point count and density. That is the case for not believing your first persistence diagram, and it does not depend on cells: trees in a plot, shops in a city and stars in a field are all sets of coordinates, and a summary that grows with the number of points can mislead you in any of them. I believe persistent homology belongs in a point-pattern toolkit, and that it should be distrusted until a null has vouched for it.
+
+::: {.callout-note}
+## What you'll take away
+
+- What a **persistence diagram** is, in plain terms, and what loops (H1) add to a point pattern that the pair correlation function cannot see.
+- How to compute persistent homology in R with the **alpha complex**, from nothing but coordinates, and why a raw diagram mostly counts your points.
+- How to calibrate a topological summary against **two simulated nulls** (random positions, and random positions that keep the density), and carry one number per sampling unit into a Bayesian model.
+:::
+
+The method needs coordinates and nothing else, so everything below transfers to any point cloud. My worked example is the one I know: cell positions in tissue sections after ischemia, one section per animal, the data of my spatial series. [Part 1](https://towardsdatascience.com/introduction-to-spatial-analysis-of-cells-for-neuroscientists-part-1-82bef519ad46/) [@manrique-castano2024part1] counted cells, Part 2 [@manrique-castano2026part2] asked where they are, and Part 3 asked how far apart two types sit. Here I ask what *shape* the points draw, and the question every topological summary owes you: compared with what? In a 2023 preprint with Dhananjay Bhaskar and Ayman ElAli we applied point pattern analysis (PPA) and TDA to the glial scar [@manrique-castano2023]; I redo the TDA part here on the same 2D sections. I use `spatstat` [@spatstat] for the patterns and the nulls, the `TDA` package for persistent homology, and `brms` [@brms] for the model.
+
+# Discs, loops and a barcode {#sec-intuition}
+
+Think of a map of points you keep zooming out of. At first every point is its own island. Zoom out and neighbouring points fuse into clusters. Keep going and, if the points sit in a ring, there is a moment when the ring closes around an empty space, and a later moment when that space is swallowed. Persistent homology records exactly that sequence. You grow a disc of the same radius around every point; the **radius** is the scale. A feature **appears** at the radius where it is born and **disappears** at the radius where it dies, and the length of its life is its **persistence**. Clusters (connected components) are called H0 and loops around empty space are H1 [@chazal2021].
+
+I need a picture to make that concrete. Twelve points on a ring, with a little jitter, is the simplest case there is. The next chunk builds them, computes the diagram with the alpha complex, and prepares the discs. The alpha complex is built from the Delaunay triangulation of the points; for 2D positions it stays small (linear in the number of points) [@otter2017], and, unlike the Vietoris–Rips complex, it needs no maximum scale, which matters because any cap below the size of the biggest gap would hide the holes you came for. `alphaComplexDiag` returns birth and death as squared radii; the helper takes the square root so that they are in the units of the data (millimetres later).
+
+```{r}
+#| label: Setup_alpha
+
+# Alpha-complex persistence diagram of a set of points. TDA returns squared radii;
+# the square root puts birth and death in the units of the data.
+alpha_ph <- function(xy, maxdim = 1) {
+  d <- alphaComplexDiag(as.matrix(xy), maxdimension = maxdim, library = "GUDHI")$diagram
+  data.frame(dimension = paste0("H", d[, 1]), birth = sqrt(d[, 2]), death = sqrt(d[, 3]))
+}
+
+# Lifetimes (persistence) of the H1 loops of a spatstat pattern
+h1_life <- function(X) {
+  d <- alpha_ph(cbind(X$x, X$y))
+  d <- d[d$dimension == "H1", ]
+  d$death - d$birth
+}
+```
+
+```{r}
+#| label: Toy_ring
+
+# Twelve points on a ring, with a little jitter
+set.seed(7)
+theta <- seq(0, 2 * pi, length.out = 13)[-13]
+Toy <- data.frame(x = cos(theta) + rnorm(12, 0, 0.04),
+                  y = sin(theta) + rnorm(12, 0, 0.04))
+
+Toy_ph <- alpha_ph(Toy)
+Toy_ph$death[!is.finite(Toy_ph$death)] <- 1.3      # the one component that never dies
+Toy_ph <- Toy_ph %>% arrange(dimension, birth, death) %>% mutate(bar = row_number())
+
+# A disc of radius r around every cell
+Disc_df <- function(r) {
+  a <- seq(0, 2 * pi, length.out = 60)
+  bind_rows(lapply(seq_len(nrow(Toy)), function(i)
+    data.frame(g = i, x = Toy$x[i] + r * cos(a), y = Toy$y[i] + r * sin(a))))
+}
+```
+
+```{r}
+#| label: fig-Toy
+#| fig-cap: "Twelve points on a ring. Top: a disc grows around every point. Bottom: the barcode. Each bar is a feature that appears at one radius (birth) and disappears at another (death); dashed lines mark the three panels."
+#| fig-height: 7
+#| fig-width: 10
+
+Eps <- c(0.12, 0.3, 1.05)
+Panels <- lapply(Eps, function(e) {
+  ggplot() +
+    geom_polygon(data = Disc_df(e), aes(x, y, group = g), fill = "#D55E00", alpha = 0.25, colour = "#D55E00") +
+    geom_point(data = Toy, aes(x, y), size = 2, colour = "black") +
+    coord_equal(xlim = c(-1.5, 1.5), ylim = c(-1.5, 1.5)) + labs(title = paste0("Radius = ", e), x = NULL, y = NULL) +
+    Plot_theme + theme(axis.line = element_blank(), axis.text = element_blank(), axis.ticks = element_blank())
+})
+
+Barcode <- ggplot(Toy_ph, aes(y = bar, colour = dimension)) +
+  geom_segment(aes(x = birth, xend = death, yend = bar), linewidth = 1.6) +
+  geom_vline(xintercept = Eps, linetype = "dashed", colour = "grey50") +
+  scale_colour_manual(values = Type_cols, name = NULL) +
+  labs(title = "Barcode", x = "Radius of the discs", y = NULL) +
+  Plot_theme + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank(), legend.position = "bottom")
+
+(Panels[[1]] | Panels[[2]] | Panels[[3]]) / Barcode + plot_layout(heights = c(1, 1.1))
+```
+
+Read the barcode from left to right. The twelve blue bars are the points as islands; eleven die when their discs touch a neighbour, and one lives on. The single orange bar is the ring: it is born around radius 0.3, when the discs close the circle (middle panel), and dies near 1, when the discs finally cover the empty centre (right panel). A long orange bar means a large empty region surrounded by points. That is what I mean by a hole.
+
+# Same K, different pattern {#sec-cell}
+
+So what does a hole tell you that the pair correlation function does not? The standard demonstration is a Baddeley–Silverman cell process. The name refers to grid cells, not biological ones: `spatstat` splits the window into a grid and puts a random number of points in each square (usually one, now and then none, rarely ten). The numbers are chosen so that the process has the same second-order properties as complete spatial randomness (CSR), including the same K function [@spatstat]. Pair correlation, K and L are second-order tools, so a test built on them has nothing to grab. The same example was used to show the power of a persistence-based test [@biscio2019]; a broader comparison of persistence-based tests with envelope tests is in @biscio2020.
+
+I reproduce the idea with two simple summaries so that you can see every step. For K, the largest departure of L(r) from r (the "L deviation"). For TDA, the total H1 persistence per point. I simulate 300 cell-process patterns and draw a random pattern with the same number of points for each, so that the number of points cannot leak into the test. The random patterns are the null distribution, and the cut-offs are the 2.5% and 97.5% quantiles. This K-based test is deliberately plain; an extreme-rank envelope test would be the careful version [@biscio2019].
+
+```{r}
+#| label: Cell_sim
+
+set.seed(2026)
+W1 <- owin(c(0, 1), c(0, 1))
+n_rep <- 300
+r_seq <- seq(0, 0.25, by = 0.005)
+
+# Two summaries per pattern: the largest departure of L(r) from r, and total H1 persistence per cell
+L_dev <- function(X) {
+  L <- Lest(X, correction = "border", r = r_seq)
+  max(abs(L$border - L$r)[L$r >= 0.02], na.rm = TRUE)
+}
+Pers_per_cell <- function(X) sum(h1_life(X)) / npoints(X)
+
+Cell_pats <- replicate(n_rep, rcell(W1, nx = 10), simplify = FALSE)
+n_cells <- sapply(Cell_pats, npoints)
+Null_pats <- lapply(sample(n_cells), function(n) runifpoint(n, win = W1))
+
+Cell_df <- data.frame(
+  Process = rep(c("Baddeley–Silverman cell process", "Complete spatial randomness"), each = n_rep),
+  L_dev = c(sapply(Cell_pats, L_dev), sapply(Null_pats, L_dev)),
+  Pers  = c(sapply(Cell_pats, Pers_per_cell), sapply(Null_pats, Pers_per_cell))
+)
+
+# Power at the 5% level, using the CSR realisations as the null distribution
+Power <- function(col) {
+  v <- Cell_df[[col]]; is_csr <- grepl("randomness", Cell_df$Process)
+  cut_lo <- quantile(v[is_csr], 0.025); cut_hi <- quantile(v[is_csr], 0.975)
+  mean(v[!is_csr] < cut_lo | v[!is_csr] > cut_hi)
+}
+Power_L <- Power("L_dev"); Power_TDA <- Power("Pers")
+```
+
+```{r}
+#| label: fig-Cell
+#| fig-cap: "Top: one realisation of each process. Bottom left: L(r) minus r for 20 realisations of each; both wander around the dashed line at zero. Bottom right: total H1 persistence per point in 300 realisations of each."
+#| fig-height: 9
+#| fig-width: 10
+
+Map_df <- bind_rows(as.data.frame(Cell_pats[[1]]) %>% mutate(P = "Baddeley–Silverman cell process"),
+                    as.data.frame(Null_pats[[1]]) %>% mutate(P = "Complete spatial randomness"))
+p_map <- ggplot(Map_df, aes(x, y)) + geom_point(size = 1.2, colour = "#D55E00") + coord_equal() +
+  scale_x_continuous(breaks = c(0, 0.5, 1)) + facet_wrap(~P) + labs(x = NULL, y = NULL) + Plot_theme
+
+L_curve <- function(X, i, P) {
+  L <- Lest(X, correction = "border", r = r_seq)
+  data.frame(i = i, P = P, r = L$r, border = L$border)
+}
+L_df <- bind_rows(lapply(1:20, function(i) {
+  bind_rows(L_curve(Cell_pats[[i]], i, "Baddeley–Silverman cell process"),
+            L_curve(Null_pats[[i]], i, "Complete spatial randomness"))
+}))
+p_L <- ggplot(L_df, aes(r, border - r, group = interaction(i, P), colour = P)) +
+  geom_line(alpha = 0.35) + geom_hline(yintercept = 0, linetype = "dashed") +
+  scale_colour_manual(values = c("#D55E00", "#4D4D4D"), name = NULL) +
+  labs(title = "L(r) − r", x = "r", y = NULL) + Plot_theme + theme(legend.position = "none")
+
+p_P <- ggplot(Cell_df, aes(Pers, fill = Process)) +
+  geom_histogram(bins = 30, alpha = 0.6, position = "identity") +
+  scale_fill_manual(values = c("#D55E00", "#4D4D4D"), name = NULL) +
+  labs(title = "Total H1 persistence per point", x = NULL, y = "Realisations") +
+  Plot_theme + theme(legend.position = "bottom")
+
+p_map / (p_L | p_P) + plot_layout(heights = c(1, 1.1))
+```
+
+Look at the two maps first: I cannot tell which is which, and neither can the L curves, which overlap completely. The histogram is the opposite. The cell process has more loop persistence per point than random points. My reading is that points sitting roughly one per grid square form many small loops of similar size that live longer than the short-lived accidents of random points. The numbers matter more than my reading: the L-based test rejects `r pct(Power_L)` of the cell-process patterns, against `r pct(Power_TDA)` for total H1 persistence. A test that rejects `r pct(Power_L)` of the patterns it should reject, when its own false-alarm rate is 5%, is a coin with a small bias.
+
+This is the part of TDA I find most appealing: it measures something the second-order moments cannot. It is also where I started to worry. A summary that sensitive will also react to things you did not intend, such as the number of points. So I turn to real data.
+
+# The data {#sec-data}
+
+My example is the hyperframe of the series: one point pattern per animal for each of three cell types (neurons, astrocytes and microglia), in millimetres, on irregular polygon windows. To reuse the code on your own data you need the same ingredients: coordinates, a label for the type of each point, the polygon of the study region, and the sampling unit (here the animal). The chunk loads the example and counts the points.
+
+```{r}
+#| label: LoadData
+
+PointPatterns <- readRDS("data/PointPatterns_5x.rds")
+row.names(PointPatterns) <- PointPatterns$ID
+PointPatterns$DPI <- factor(PointPatterns$DPI, levels = c("0D", "5D", "15D", "30D"))
+Cell_types <- c("Neurons", "Astrocytes", "Microglia")
+
+Info_df <- data.frame(
+  ID = PointPatterns$ID, DPI = PointPatterns$DPI,
+  Neurons    = unlist(with(PointPatterns, npoints(Neurons))),
+  Astrocytes = unlist(with(PointPatterns, npoints(Astrocytes))),
+  Microglia  = unlist(with(PointPatterns, npoints(Microglia))),
+  Area = sapply(PointPatterns$Neurons, function(x) area(Window(x)))
+)
+```
+
+There are `r nrow(Info_df)` animals, in groups of `r paste(table(Info_df$DPI), collapse = ", ")` at 0, 5, 15 and 30 days post-ischemia (DPI; labelled 0D, 5D, 15D and 30D, with 0D as the controls), and each window covers `r round(min(Info_df$Area))` to `r round(max(Info_df$Area))` mm². Cell numbers vary a lot: the median is `r round(median(Info_df$Neurons))` neurons, `r round(median(Info_df$Astrocytes))` astrocytes and `r round(median(Info_df$Microglia))` microglia per section, and the control sections have only about a hundred glial cells. Keep that in mind; it comes back. The next chunk draws neurons and microglia of one animal at 5D, with its 20 longest-lived loops as bars.
+
+```{r}
+#| label: fig-Example
+#| fig-cap: "Neurons and microglia of one animal at 5D (M01), with the 20 longest-lived H1 loops drawn as bars below."
+#| fig-height: 7
+#| fig-width: 10
+
+Example_id <- "M01"
+Ex_maps <- bind_rows(
+  as.data.frame(PointPatterns$Neurons[[Example_id]]) %>% mutate(Type = "Neurons"),
+  as.data.frame(PointPatterns$Microglia[[Example_id]]) %>% mutate(Type = "Microglia"))
+
+Ex_bars <- bind_rows(lapply(c("Neurons", "Microglia"), function(tp) {
+  X <- PointPatterns[[tp]][[Example_id]]
+  d <- alpha_ph(cbind(X$x, X$y))
+  d <- d[d$dimension == "H1", ]
+  d %>% mutate(Type = tp, pers = death - birth) %>% arrange(desc(pers)) %>% slice_head(n = 20) %>% mutate(bar = row_number())
+}))
+
+p1 <- ggplot(Ex_maps, aes(x, y)) + geom_point(size = 0.6, alpha = 0.7, colour = "#D55E00") +
+  coord_equal() + facet_wrap(~Type) + labs(x = "x (mm)", y = "y (mm)") + Plot_theme
+p2 <- ggplot(Ex_bars, aes(y = bar)) + geom_segment(aes(x = birth, xend = death, yend = bar), linewidth = 1.6, colour = "#D55E00") +
+  facet_wrap(~Type) + scale_y_reverse() + labs(x = "Radius (mm)", y = "Longest-lived loops") + Plot_theme
+p1 / p2 + plot_layout(heights = c(1.5, 1))
+```
+
+The neurons sit in patches with empty gaps between them, and the longest bar of the neurons (about 0.4 mm of persistence, a loop that dies at a radius of about 0.66 mm) is the largest of those gaps. The microglia fill more of the space, so their longest loops are shorter. This is the picture I wanted: an empty region as an object you can measure. Before believing it, I ask a duller question.
+
+# The naive reading: more loops, more structure? {#sec-naive}
+
+The obvious summary per section is the total persistence of all H1 loops, the sum of the bar lengths. It is easy to compute and it looks like a measure of how holey a section is. The next chunk computes it for every animal and cell type, together with the L-based clustering index that I use at the end, and the figure after it plots the total against the number of cells in the section.
+
+```{r}
+#| label: Obs_summaries
+
+N_sims <- 49       # simulated patterns per animal, cell type and null
+SIGMAS <- c(0.1, 0.2, 0.4)
+
+# Total and largest H1 persistence of one pattern
+h1_stats <- function(X) {
+  life <- h1_life(X)
+  c(tot = sum(life), mx = if (length(life)) max(life) else 0)
+}
+
+# Mean L(r) - r in the 30 to 100 micrometre band used in Part 3
+L_index <- function(X) {
+  L <- Lest(X, correction = "border", r = seq(0, 0.12, by = 0.005))
+  mean((L$border - L$r)[L$r >= 0.03 & L$r <= 0.10], na.rm = TRUE)
+}
+
+# Observed summaries, one row per animal and cell type
+Obs_df <- bind_rows(lapply(PointPatterns$ID, function(id) {
+  bind_rows(lapply(Cell_types, function(tp) {
+    X <- PointPatterns[[tp]][[id]]
+    obs <- h1_stats(X)
+    data.frame(ID = id, DPI = as.character(PointPatterns$DPI[PointPatterns$ID == id]), Type = tp,
+               n = npoints(X), tot = obs[["tot"]], mx = obs[["mx"]], L_index = L_index(X))
+  }))
+}))
+Rho_naive <- cor(Obs_df$n, Obs_df$tot, method = "spearman")
+```
+
+```{r}
+#| label: fig-Naive
+#| fig-cap: "Total H1 persistence against the number of cells in the section, one point per animal and cell type."
+#| fig-height: 5
+#| fig-width: 7
+
+ggplot(Obs_df, aes(n, tot, colour = Type)) + geom_point(size = 2.2, alpha = 0.8) +
+  labs(x = "Cells in the section", y = "Total H1 persistence (mm)") + Plot_theme
+```
+
+The points fall on one line: the Spearman correlation between the number of cells and the total H1 persistence is `r f2(Rho_naive)`, and cell type barely matters. A raw persistence total is, to a first approximation, a point count with extra steps. If I had compared 0D with 30D on it, I would have reported that the scar changes the topology, when it mostly changes the number of cells in the section. The same trap waits in any dataset where the count varies between samples, which is most of them. It is also the trap of the raw pair correlation in Part 3: a summary that depends on density cannot be read as structure until density is accounted for.
+
+# A fair reference: two nulls {#sec-null}
+
+In the lab, you do not read a western blot without a loading control. A persistence diagram needs one too, and here it is a **null**: patterns simulated in the same window, with the same number of cells, under a rule I know to contain no structure beyond what I put in. I use two.
+
+1. **Random positions** (CSR): the points fall uniformly in the window. The window is the study region's own polygon (here the outline of the section), so artefacts of its outline, such as a loop that closes in a concavity, appear in the null as well and largely cancel in the ratio. That is my way of handling the edge: not by correcting it, but by making the null suffer it too.
+2. **Random positions that keep the density**: the same number of points, drawn with the probability given by a kernel-smoothed density of the observed points (`density(..., sigma = 0.2)`, a Gaussian kernel with a 0.2 mm smoothing scale, the one I used in Part 3). This null keeps the large-scale arrangement (where there are points, where there are not) and throws away the fine arrangement. What survives the comparison is what the density alone does not explain.
+
+For each animal and cell type, the next chunk simulates `r N_sims` patterns from each null (and from two more smoothing scales, 0.1 and 0.4 mm, for later), computes the same total persistence, and keeps the mean of the null. The result is saved in `models/` because it takes a few minutes. The summary I model is the **log2 ratio**, observed over the null mean: zero means "same as the null", −1 means "half as much".
+
+```{r}
+#| label: Real_ph
+#| cache: false
+
+if (file.exists("models/TDA_nulls.rds")) {
+  Null_means <- readRDS("models/TDA_nulls.rds")
+} else {
+  set.seed(2026)
+  rows <- list()
+  for (id in PointPatterns$ID) for (tp in Cell_types) {
+    X <- PointPatterns[[tp]][[id]]; n <- npoints(X); W <- Window(X)
+    csr <- t(replicate(N_sims, h1_stats(runifpoint(n, win = W))))
+    inh <- lapply(SIGMAS, function(s) {
+      lam <- density(X, sigma = s, positive = TRUE)
+      t(replicate(N_sims, h1_stats(rpoint(n, f = lam))))
+    })
+    rows[[length(rows) + 1]] <- data.frame(
+      ID = id, Type = tp,
+      tot_csr = mean(csr[, "tot"]), mx_csr = mean(csr[, "mx"]),
+      tot_inh0.1 = mean(inh[[1]][, "tot"]), tot_inh0.2 = mean(inh[[2]][, "tot"]), tot_inh0.4 = mean(inh[[3]][, "tot"]),
+      mx_inh0.2 = mean(inh[[2]][, "mx"]))
+  }
+  Null_means <- bind_rows(rows)
+  saveRDS(Null_means, "models/TDA_nulls.rds")
+}
+
+Nulls_df <- Obs_df %>%
+  left_join(Null_means, by = c("ID", "Type")) %>%
+  mutate(DPI = factor(DPI, levels = levels(PointPatterns$DPI)),
+         Type = factor(Type, levels = Cell_types),
+         Log2_csr = log2(tot / tot_csr),
+         Log2_inh0.1 = log2(tot / tot_inh0.1),
+         Log2_inh0.2 = log2(tot / tot_inh0.2),
+         Log2_inh0.4 = log2(tot / tot_inh0.4),
+         Log2_mx_inh = log2(mx / mx_inh0.2))
+
+# Median of one ratio, and its range across time points, to quote in the text
+Med <- function(col, tp, dpi) median(Nulls_df[[col]][Nulls_df$Type == tp & Nulls_df$DPI == dpi])
+MedRange <- function(col, tp) range(sapply(levels(Nulls_df$DPI), function(d) Med(col, tp, d)))
+```
+
+Pause and predict. If neuron loss opens holes, which time point should show the largest ratio against random positions, and against positions that keep the density? Write down your guess; the figure shows one point per animal and the median as a black segment.
+
+```{r}
+#| label: fig-Ratio
+#| fig-cap: "Total H1 persistence relative to simulated patterns with the same number of cells (log2 scale, 0 = same as the null). One point per animal; the black segment is the median. Left: the null is random positions. Right: the null keeps the density of the section (smoothing scale 0.2 mm)."
+#| fig-height: 7
+#| fig-width: 11
+
+Ratio_long <- Nulls_df %>%
+  pivot_longer(c(Log2_csr, Log2_inh0.2), names_to = "Null", values_to = "Log2") %>%
+  mutate(Null = recode(Null, Log2_csr = "Null: random positions", Log2_inh0.2 = "Null: random positions that keep the density"))
+
+ggplot(Ratio_long, aes(DPI, Log2, colour = DPI)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_jitter(width = 0.12, size = 2, alpha = 0.7) +
+  stat_summary(fun = median, geom = "crossbar", width = 0.5, linewidth = 0.5, colour = "black") +
+  scale_colour_manual(values = DPI_cols, guide = "none") +
+  facet_grid(Type ~ Null) + labs(x = NULL, y = "log2(observed / null)") + Plot_theme
+```
+
+On the left, every cell type has less persistence than random positions: the neuron medians range from `r f2(MedRange("Log2_csr", "Neurons")[1])` to `r f2(MedRange("Log2_csr", "Neurons")[2])`, with the lowest at 15D (about `r less(Med("Log2_csr", "Neurons", "15D"))` less than random). Less loop persistence than chance is what clustering does, in my reading: points that huddle leave fewer accidental gaps among themselves. So this left panel is not telling me that the scar is full of holes. If anything, it says that cells are grouped, which I already knew from the pair correlation. On the right, once the null keeps the density, almost everything collapses toward zero. Hold on to that.
+
+## One number per animal, with uncertainty
+
+I want the posterior of these ratios, not only medians. Each animal contributes three ratios (one per cell type), so the animal enters as a varying intercept, and the cell type and the time point form the groups of interest. In your data the sampling unit may be a plot, a district or a patient; the logic is the same: ratios from one unit are not independent, and the unit gets its own intercept. The response is a log ratio, roughly symmetrical, with a couple of odd values among the sparse control sections, so a Student-t family is a safe choice. The weakly informative prior on the group means (`normal(0, 1)`) is wide for a log2 ratio.
+
+```{r}
+#| label: Fit_models
+
+Prior_b <- prior(normal(0, 1), class = "b")
+Fit_csr <- brm(Log2_csr ~ 0 + Type:DPI + (1 | ID), data = Nulls_df, family = student(),
+               prior = Prior_b, chains = 4, cores = 4, seed = 2026, file = "models/TDA_Fit_csr")
+Fit_inh <- brm(Log2_inh0.2 ~ 0 + Type:DPI + (1 | ID), data = Nulls_df, family = student(),
+               prior = Prior_b, chains = 4, cores = 4, seed = 2026, file = "models/TDA_Fit_inh")
+
+# Posterior median and 95% interval of one group mean, and the range of medians across time points
+Coef <- function(fit, type, dpi) fixef(fit)[paste0("Type", type, ":DPI", dpi), c("Estimate", "Q2.5", "Q97.5")]
+CoefRange <- function(fit, type) range(sapply(levels(Nulls_df$DPI), function(d) Coef(fit, type, d)[1]))
+```
+
+```{r}
+#| label: fig-Posterior
+#| fig-cap: "Posterior of the mean log2 ratio by cell type and time point (median and 95% interval). Dashed line: 0 = same as the null."
+#| fig-height: 6
+#| fig-width: 11
+
+Post_df <- bind_rows(
+  as_tibble(as.data.frame(Fit_csr)) %>% mutate(Null = "Random positions"),
+  as_tibble(as.data.frame(Fit_inh)) %>% mutate(Null = "Positions that keep the density")) %>%
+  select(Null, starts_with("b_")) %>%
+  pivot_longer(starts_with("b_"), names_to = "Term", values_to = "Draw") %>%
+  mutate(Type = sub("b_Type([A-Za-z]+):DPI.*", "\\1", Term), DPI = sub(".*DPI", "", Term),
+         Type = factor(Type, levels = Cell_types), DPI = factor(DPI, levels = levels(PointPatterns$DPI)))
+
+ggplot(Post_df, aes(DPI, Draw, colour = DPI)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  stat_summary(fun.data = function(x) data.frame(y = median(x), ymin = quantile(x, 0.025), ymax = quantile(x, 0.975)),
+               geom = "pointrange", size = 0.8, linewidth = 1) +
+  scale_colour_manual(values = DPI_cols, guide = "none") +
+  facet_grid(Type ~ Null) + labs(x = NULL, y = "Mean log2(observed / null)") + Plot_theme
+```
+
+In words: against random positions, neurons at 15D have `r f2(Coef(Fit_csr, "Neurons", "15D")[1])` (95% interval `r f2(Coef(Fit_csr, "Neurons", "15D")[2])` to `r f2(Coef(Fit_csr, "Neurons", "15D")[3])`), that is `r less(Coef(Fit_csr, "Neurons", "15D")[1])` less persistence than chance, and astrocytes in the control sections have `r less(Coef(Fit_csr, "Astrocytes", "0D")[1])` less. Against the density-preserving null the picture shrinks: the neuron means sit between `r f2(CoefRange(Fit_inh, "Neurons")[1])` and `r f2(CoefRange(Fit_inh, "Neurons")[2])`, a deficit of `r less(CoefRange(Fit_inh, "Neurons")[2])` to `r less(CoefRange(Fit_inh, "Neurons")[1])`. The intervals are narrow, so the deficit is a reliable number, but it is small, and it shows no trend with time after ischemia. Microglia at 30D sit at `r f2(Coef(Fit_inh, "Microglia", "30D")[1])` (interval `r f2(Coef(Fit_inh, "Microglia", "30D")[2])` to `r f2(Coef(Fit_inh, "Microglia", "30D")[3])`): nothing beyond the smooth density.
+
+The one exception is the control microglia. Their ratio against the density-preserving null is `r f2(Coef(Fit_inh, "Microglia", "0D")[1])` (interval `r f2(Coef(Fit_inh, "Microglia", "0D")[2])` to `r f2(Coef(Fit_inh, "Microglia", "0D")[3])`), that is, `r pct(2^Coef(Fit_inh, "Microglia", "0D")[1] - 1)` more persistence than chance. My reading is that sparse, resting microglia are spaced more evenly than random positions, which is the cell-process direction in the histogram above. But this comes from five animals with about a hundred microglia each, and I would not build a claim on it.
+
+## The null has a dial
+
+The density-preserving null has a smoothing scale, and I picked 0.2 mm. That choice decides what counts as "density" and what counts as "shape". Holes larger than the kernel survive in the smooth density, so the null reproduces them; at a smaller scale, the null reproduces almost every loop; at a larger scale, it reproduces only the broadest gradient. The next figure repeats the ratio at three scales.
+
+```{r}
+#| label: fig-Sensitivity
+#| fig-cap: "The same ratio with three smoothing scales for the density-preserving null. Points are medians across animals; whiskers are the interquartile range."
+#| fig-height: 5
+#| fig-width: 10
+
+Sens_df <- Nulls_df %>%
+  pivot_longer(c(Log2_inh0.1, Log2_inh0.2, Log2_inh0.4), names_to = "Sigma", values_to = "Log2") %>%
+  mutate(Sigma = paste0("Smoothing scale ", sub("Log2_inh", "", Sigma), " mm"))
+ggplot(Sens_df, aes(DPI, Log2, colour = DPI)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  stat_summary(fun.data = function(x) data.frame(y = median(x), ymin = quantile(x, 0.25), ymax = quantile(x, 0.75)),
+               geom = "pointrange", size = 0.6) +
+  scale_colour_manual(values = DPI_cols, guide = "none") +
+  facet_grid(Type ~ Sigma) + labs(x = NULL, y = "Median log2 ratio (IQR)") + Plot_theme
+```
+
+At 0.1 mm the ratios sit at or slightly above zero for neurons and astrocytes. At 0.4 mm they drop, with the neuron medians between `r f2(MedRange("Log2_inh0.4", "Neurons")[1])` and `r f2(MedRange("Log2_inh0.4", "Neurons")[2])`. Whoever tells you that a topological result is "beyond density" owes you the smoothing scale. A dilemma I leave open: for a glial scar, would you defend 0.1 mm (a few cell diameters) or 0.4 mm (a patch of cortex)? The scale that decides it, in my case how far a glial cell reaches its neighbours, is not in the point pattern; in yours it will be something else, such as the reach of a tree's canopy or of a shop's customers, and it will not be in the coordinates either.
+
+# TDA against PPA on the same sections {#sec-ppa}
+
+How does the total persistence compare with a clustering index from PPA? For each animal and cell type I computed the mean of L(r) minus r over the same 30 to 100 µm band that I used in Part 3 (the 30 µm lower limit protects against a fragment of one cell counted as two, which would otherwise look like attraction). The figure puts it against the TDA ratio to random positions.
+
+```{r}
+#| label: fig-VsPPA
+#| fig-cap: "Clustering from PPA (mean L(r) − r between 30 and 100 µm) against the TDA ratio to random positions, one point per animal and cell type."
+#| fig-height: 5
+#| fig-width: 7
+
+Rho_ppa <- cor(Nulls_df$L_index, Nulls_df$Log2_csr, method = "spearman")
+ggplot(Nulls_df, aes(L_index, Log2_csr, colour = Type)) + geom_point(size = 2.2, alpha = 0.8) +
+  labs(x = "Clustering from PPA", y = "TDA: log2(observed / random null)") + Plot_theme
+```
+
+The Spearman correlation is `r f2(Rho_ppa)`. On these sections, total H1 persistence relative to random positions is the same message as the L function, upside down: more clustering, fewer loops. That is not a failure of TDA. It is what a good second opinion looks like when the first one was right. The cell-process simulation shows where TDA would disagree with K: patterns whose second-order structure is flat but whose arrangement is not. In the scar sections I analysed, the arrangement that stands out is the density itself.
+
+Two caveats the data impose, in the place where you would object. First, persistence diagrams move little when point positions shift a little [@chazal2021], but every point cloud comes from a detector, and detectors make mistakes: a duplicate detection (in my sections, a fragment of one cell counted as two) creates a tiny H0 bar that dies almost at once, and a spurious point inside a void can cut that loop short. In my experience, segmenting neurons (NeuN) is easier than astrocytes (GFAP) or microglia (IBA1), so the loops of those two types deserve more caution than the loops of neurons. Second, each section is one slice of one animal, and the animal is the unit, which is why the model above has one intercept per animal and nothing more. Formal tests on diagrams, from confidence sets [@fasy2014] to permutation tests on persistence landscapes [@robinson2017; @hartsock2025], are the next step up if you have several sections per animal; with one per animal, the model above is enough.
+
+What would change my mind? A topological summary computed *after* conditioning on the density that still moves with time after ischemia, or with the pair of cell types, instead of with the point count. The next step I find promising is not in this post: in the Python companion I ask which holes are *where*, and whether points of another type sit in them.
+
+# Your turn
+
+- Which smoothing scale would you defend for the density-preserving null in your own data, and what real-world scale justifies it?
+- What structure in your field would a pair correlation function miss and a hole would show: a clearing in a forest, a gap in a city, a lesion core, a ring of cells?
+- If you think the shape of my example goes beyond its density, I want the counterargument, with the null that would show it.
+
+I read and answer every comment. Next, in Python: where the holes are, and what sits inside them.
+
+The code and data are in [the GitHub folder of this article](https://github.com/daniel-manrique/TDS-Medium_Blog/tree/main/articles/2026-10-28_TDA_R).
+
+All images, unless otherwise stated, were generated using the displayed R code.

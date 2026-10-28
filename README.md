@@ -13,6 +13,9 @@ Reproducible code, data and Quarto documents behind my articles on statistics an
 | 2024-04-19 | Improving the analysis of object (or cells) counts with lots of zeros | [articles/2024-04-19_CountsZeroInflated](articles/2024-04-19_CountsZeroInflated) |
 | 2024-05-24 | Introduction to spatial analysis of cells for neuroscientists (part 1) | [articles/2024-05-24_SpatialAnalysis_Part1](articles/2024-05-24_SpatialAnalysis_Part1) |
 | 2026-10-23 | Where a Cell Sits Matters More Than How Many There Are (spatial analysis, part 2) | [articles/2026-10-23_SpatialAnalysis_Part2](articles/2026-10-23_SpatialAnalysis_Part2) |
+| 2026-10-28 | Your 'Outliers' Are Telling You Something: Rebuilding a Student-t Analysis From Scratch | [articles/2026-10-28_OutliersRevisited](articles/2026-10-28_OutliersRevisited) |
+| 2026-10-28 | Persistent Homology Sees What Pair Correlation Cannot. A Null Model Decides If It Matters. (R) | [articles/2026-10-28_TDA_R](articles/2026-10-28_TDA_R) |
+| 2026-10-28 | Does the Shape Beat the Count? Persistent Homology in Python for Point Clouds | [articles/2026-10-28_TDA_Python](articles/2026-10-28_TDA_Python) |
 
 ## Repository layout
 
@@ -37,7 +40,12 @@ All paths inside an article are relative to its own folder (`data/...`, `models/
 
    ```r
    install.packages(c("brms", "tidybayes", "ggdist", "modelr", "patchwork", "easystats",
-                      "dplyr", "tibble", "tidyr", "ggplot2", "ghibli", "gtsummary", "spatstat", "readxl"))
+                      "dplyr", "tibble", "tidyr", "ggplot2", "ghibli", "gtsummary", "spatstat", "readxl", "loo", "knitr", "TDA"))
+   ```
+   The Python article (`2026-10-28_TDA_Python`) also needs Python 3 with its Jupyter kernel:
+
+   ```bash
+   pip install gudhi numpy pandas scipy scikit-learn matplotlib jupyter
    ```
 3. Render one article, or all of them:
 

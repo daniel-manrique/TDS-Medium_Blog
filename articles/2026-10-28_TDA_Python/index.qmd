@@ -1,0 +1,380 @@
+---
+title: "Does the Shape Beat the Count? Persistent Homology in Python for Point Clouds"
+subtitle: "Betti curves, a point-count baseline, validation by group and a hole map with gudhi. Worked example: glial cells after ischemia."
+keywords:
+  - Topological data analysis
+  - Persistent homology
+  - Python
+  - Point clouds
+  - Spatial analysis
+jupyter: python3
+---
+
+```{python}
+#| label: LoadPack
+#| include: false
+
+import warnings
+warnings.filterwarnings("ignore")
+
+import gudhi
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.path import Path
+from sklearn.dummy import DummyRegressor
+from sklearn.metrics import mean_absolute_error
+from sklearn.model_selection import LeaveOneGroupOut, ShuffleSplit, cross_val_predict
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVR
+
+plt.rcParams.update({
+    "font.size": 12, "axes.titlesize": 14, "axes.titleweight": "bold", "axes.labelsize": 13,
+    "axes.spines.top": False, "axes.spines.right": False, "axes.linewidth": 1.2,
+    "figure.dpi": 110, "legend.frameon": False,
+})
+
+# One colour per time point, used in every figure
+DPI_ORDER = ["0D", "5D", "15D", "30D"]
+DPI_COLS = {"0D": "#4D4D4D", "5D": "#D55E00", "15D": "#009E73", "30D": "#0072B2"}
+DAYS = {"0D": 0, "5D": 5, "15D": 15, "30D": 30}
+TYPES = ["Neurons", "Astrocytes", "Microglia"]
+```
+
+Counting points is the least glamorous step of any spatial analysis, and it is the baseline that every new feature has to beat. In my own data, cells in tissue sections after ischemia, I asked two predictors the same question, how many days after ischemia a section comes from: the number of cells of each type, and a topological summary of where those cells sit. The counts won. That could have been the end of the story, but persistent homology can do something a count cannot: it can tell you where the empty regions are. When I asked who sits inside the big holes of the neurons, the microglia answered, and they answered more loudly the later the time point.
+
+I believe a topological feature has to beat the point count before it earns a place in a model, and that where persistent homology earned its place in my data was in locating holes, not in predicting the outcome. The recipe needs only coordinates, so it applies as well to trees, shops or stars as to cells.
+
+::: {.callout-note}
+## What you'll take away
+
+- How to compute **alpha-complex persistence** in Python with `gudhi` from plain coordinates and turn a diagram into a **Betti curve** a model can use.
+- Why a topological model needs two guards: a **point-count baseline** and **validation by group** (the sampling unit), and how to build both with `scikit-learn`.
+- How to turn a persistence diagram into a **map**: the position and size of the holes of one point type, and how many points of another type fall inside them.
+:::
+
+This is the Python companion of [an R guide on persistent homology and simulated nulls](https://github.com/daniel-manrique/TDS-Medium_Blog/tree/main/articles/2026-10-28_TDA_R), but it stands alone. There I calibrated a topological summary against simulated nulls. Here I ask what you can do with the diagrams once you have them. My example is cell positions in sections of ischemic tissue, the data of my spatial series; swap in any labelled point cloud. If you have not met persistent homology: it grows a disc around every point and records when clusters (H0) and loops around empty space (H1) appear and disappear as the radius grows [@chazal2021]. Each loop is born at one radius and dies at another; the gap between the two is its persistence, and a long-lived loop is a large empty region surrounded by points.
+
+# A loop counter, and a map {#sec-intuition}
+
+Two things come out of a diagram, and this post uses both. The first is a **Betti curve**: at every radius, how many loops are alive. It is the simplest way to turn a diagram into a vector of fixed length, and it is what we will give to a regression model [@hensel2021]. Persistence landscapes [@bubenik2015] and persistence images [@adams2017] are richer ways to do the same job. The second is less common and, for spatial data, more useful. In the alpha complex, a loop dies when one specific triangle of the Delaunay triangulation fills it in. That triangle sits where the hole was, and its smallest enclosing circle has the size of the hole. So a long bar in the barcode is not an abstraction: it comes with a centre and a radius that you can draw on your map.
+
+# The data {#sec-data}
+
+The coordinates are the same as in the spatial series: one table row per detected cell, in millimetres, for neurons, astrocytes and microglia of each animal, plus the polygon that outlines each section. To reuse the code, your data needs the same layout: one row per point with `x`, `y`, a type label and a sample ID, plus a polygon per sample. I exported mine from the R object to two CSV files so that no R is needed here.
+
+```{python}
+#| label: LoadData
+
+cells = pd.read_csv("data/cells.csv")
+windows = pd.read_csv("data/windows.csv")
+DPI_OF = cells.groupby("ID")["DPI"].first()
+IDS = sorted(DPI_OF.index, key=lambda i: (DAYS[DPI_OF[i]], i))   # by time point, then animal
+
+counts = cells.groupby(["ID", "Type"]).size().unstack()[TYPES]
+animals_per_dpi = DPI_OF.value_counts().reindex(DPI_ORDER)
+
+def pts(id_, tp):
+    g = cells[(cells.ID == id_) & (cells.Type == tp)]
+    return g[["x", "y"]].to_numpy()
+
+def poly(id_):
+    return windows[windows.ID == id_][["x", "y"]].to_numpy()
+```
+
+There are `{python} len(DPI_OF)` animals, in groups of `{python} ", ".join(str(int(n)) for n in animals_per_dpi)` at 0, 5, 15 and 30 days after ischemia (labelled 0D, 5D, 15D and 30D; 0D are the controls). The median section holds `{python} int(counts["Neurons"].median())` neurons, `{python} int(counts["Astrocytes"].median())` astrocytes and `{python} int(counts["Microglia"].median())` microglia; the control sections have about a hundred glial cells.
+
+# The naive model: predict time from Betti curves {#sec-naive}
+
+The obvious experiment is the one a topological pipeline invites. Compute the diagram of each cell type, summarise it as a Betti curve, concatenate the three curves, and ask a regression model for the outcome you care about, here the days after ischemia. The helper below builds the alpha complex with `gudhi`, reads the H1 intervals, and counts, on a grid of 60 radii from 0 to 0.5 mm, how many loops are alive. `gudhi` returns squared radii, so I take the square root to work in millimetres.
+
+```{python}
+#| label: Betti_helpers
+
+GRID = np.linspace(0, 0.5, 60)
+
+def alpha_tree(p):
+    st = gudhi.AlphaComplex(points=p).create_simplex_tree()
+    st.compute_persistence()
+    return st
+
+def h1_intervals(st):
+    iv = np.array([(np.sqrt(b), np.sqrt(d)) for dim, (b, d) in st.persistence() if dim == 1])
+    return iv.reshape(-1, 2)
+
+def betti1(p):
+    iv = h1_intervals(alpha_tree(p))
+    return ((iv[:, 0][None, :] <= GRID[:, None]) & (GRID[:, None] < iv[:, 1][None, :])).sum(axis=1)
+
+# Betti curve of every whole section, to look at them
+Curves = {(i, tp): betti1(pts(i, tp)) for i in IDS for tp in TYPES}
+```
+
+```{python}
+#| label: fig-Betti
+#| fig-cap: "Mean H1 Betti curve per time point and cell type (one curve per animal averaged within each time point). The curve counts the loops alive at each radius."
+#| fig-height: 4.2
+#| fig-width: 11
+
+fig, axes = plt.subplots(1, 3, figsize=(11, 4.2), sharey=True)
+for ax, tp in zip(axes, TYPES):
+    for d in DPI_ORDER:
+        m = np.mean([Curves[(i, tp)] for i in IDS if DPI_OF[i] == d], axis=0)
+        ax.plot(GRID, m, color=DPI_COLS[d], lw=2, label=d)
+    ax.set_title(tp); ax.set_xlabel("Radius (mm)")
+axes[0].set_ylabel("Loops alive"); axes[0].legend(title="Time point")
+plt.tight_layout(); plt.show()
+```
+
+Look at the heights of the curves before reading their shapes. The curves are tallest where there are the most cells (neurons at 0D, microglia at 5D) and almost flat for the microglia of the controls, which already tells you what is coming. To compare the models fairly I need several samples per sampling unit (here the animal), as you would have with regions of interest, plots or serial sections. So I cut every section in a 2 × 2 grid, keep the tiles with at least 15 cells of every type, and compute the three Betti curves per tile.
+
+```{python}
+#| label: Tiles
+
+# Cut each section into a 2x2 grid; keep tiles with at least 15 cells of each type
+rows = []
+for i in IDS:
+    allp = cells[cells.ID == i][["x", "y"]].to_numpy()
+    x0, y0 = allp.min(0); x1, y1 = allp.max(0)
+    for a in range(2):
+        for b in range(2):
+            feats, cnt, ok = [], [], True
+            for tp in TYPES:
+                p = pts(i, tp)
+                m = ((p[:, 0] >= x0 + (x1 - x0) * a / 2) & (p[:, 0] < x0 + (x1 - x0) * (a + 1) / 2) &
+                     (p[:, 1] >= y0 + (y1 - y0) * b / 2) & (p[:, 1] < y0 + (y1 - y0) * (b + 1) / 2))
+                if m.sum() < 15:
+                    ok = False; break
+                feats.append(betti1(p[m])); cnt.append(m.sum())
+            if ok:
+                rows.append(dict(ID=i, day=DAYS[DPI_OF[i]], curves=np.concatenate(feats), logn=np.log(cnt)))
+
+Tiles = pd.DataFrame(rows)
+X_curves = np.vstack(Tiles.curves.to_numpy())
+X_counts = np.vstack(Tiles.logn.to_numpy())
+y = Tiles.day.to_numpy(); groups = Tiles.ID.to_numpy()
+```
+
+The cut gives `{python} len(Tiles)` tiles from `{python} Tiles.ID.nunique()` animals, between `{python} int(Tiles.groupby("ID").size().min())` and `{python} int(Tiles.groupby("ID").size().max())` tiles per animal. Now the validation. A model that sees some tiles of an animal in training and the other tiles of the same animal in testing can learn the animal instead of the signal, so the honest scheme leaves **a whole sampling unit out** at a time. I run both schemes, 10 random 80/20 splits of the tiles and leave-one-animal-out, with the same model: a support vector regression with a radial kernel on standardised features. The mean absolute error (MAE) is in days. As a floor I add a "model" that predicts the training mean.
+
+```{python}
+#| label: Validation
+
+def mae(model, X, scheme):
+    if scheme == "random":
+        errs = [mean_absolute_error(y[te], model.fit(X[tr], y[tr]).predict(X[te]))
+                for tr, te in ShuffleSplit(10, test_size=0.2, random_state=1).split(X)]
+        return np.mean(errs)
+    pred = cross_val_predict(model, X, y, groups=groups, cv=LeaveOneGroupOut())
+    return mean_absolute_error(y, pred)
+
+svr = lambda: make_pipeline(StandardScaler(), SVR(C=10, epsilon=1.0))
+mean_only = lambda: DummyRegressor(strategy="mean")
+
+Results = pd.DataFrame({
+    "Random 80/20 splits": [mae(mean_only(), X_counts, "random"), mae(svr(), X_counts, "random"),
+                            mae(svr(), X_curves, "random"), mae(svr(), np.hstack([X_counts, X_curves]), "random")],
+    "Leave one animal out": [mae(mean_only(), X_counts, "loao"), mae(svr(), X_counts, "loao"),
+                             mae(svr(), X_curves, "loao"), mae(svr(), np.hstack([X_counts, X_curves]), "loao")],
+}, index=["Predict the mean", "Point counts (log)", "Betti curves", "Counts + Betti curves"]).round(1)
+R = lambda row, col: f"{Results.loc[row, col]:.1f}"      # one number from the table, to write in the text
+Results
+```
+
+Two things stand out. The model with Betti curves does better than predicting the mean (`{python} R("Betti curves", "Leave one animal out")` against `{python} R("Predict the mean", "Leave one animal out")` days of error with one animal left out), so the curves carry information about time. But the three log cell counts do better still, `{python} R("Point counts (log)", "Leave one animal out")` days, and adding the curves to the counts makes the error worse, not better (`{python} R("Counts + Betti curves", "Leave one animal out")`). With 60 radii times three cell types, the curves are 180 features against a few dozen animals; whatever signal they have, the counts have already given it to the model more cheaply.
+
+The two validation schemes give almost the same error here. A random split can flatter a model that recognises animals, and in these tiles that effect did not show up. I would still validate by animal. The cost is nothing, and the day it matters is the day that you cut your sections into more tiles or your model has more freedom. This section is about the habit, not a verdict on any particular dataset.
+
+Run the baseline on your own data before you present a topological feature. If it does not beat the point count, it does not need to go in the model.
+
+# Where the holes are, and who sits inside {#sec-holes}
+
+Persistent homology does give me something the counts cannot: a position. A counter gives me one number per sample and no map. The map is where I would use topology. I want to find the large empty regions of one point type (here, neurons) and ask how many points of the other types (microglia and astrocytes) are inside them. The same recipe would ask, for example, how many trees of one species stand in the clearings left by another.
+
+The recipe has four steps. First, compute the alpha complex of the neurons of one animal. Second, for each H1 loop, take the triangle that kills it, with `persistence_pairs()`. Third, take the smallest circle that encloses that triangle: its centre is where the hole is and its radius is how big it is (for an acute triangle that is the circumscribed circle, for an obtuse one it is the circle on its longest side; this radius equals the death value that `gudhi` reports). Fourth, keep only holes whose whole circle lies inside the section, so that a notch in the outline cannot pass as a hole. Voids in cell positions have been used to tell immune cell types apart in tumours [@vipond2021]; here I use them to locate other points.
+
+```{python}
+#| label: Hole_helpers
+
+def enclosing_circle(p):
+    """Smallest circle through/around a triangle: (centre, radius)."""
+    a, b, c = p
+    sides = [(np.linalg.norm(b - c), a, b, c), (np.linalg.norm(a - c), b, a, c), (np.linalg.norm(a - b), c, a, b)]
+    L, o, u, v = max(sides, key=lambda t: t[0])
+    if np.dot(u - o, v - o) <= 0:                       # right or obtuse: circle on the longest side
+        return (u + v) / 2, L / 2
+    (ax, ay), (bx, by), (cx, cy) = p                    # acute: circumscribed circle
+    d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    ux = ((ax**2 + ay**2) * (by - cy) + (bx**2 + by**2) * (cy - ay) + (cx**2 + cy**2) * (ay - by)) / d
+    uy = ((ax**2 + ay**2) * (cx - bx) + (bx**2 + by**2) * (ax - cx) + (cx**2 + cy**2) * (bx - ax)) / d
+    ctr = np.array([ux, uy])
+    return ctr, np.linalg.norm(ctr - a)
+
+def dist_to_polygon(pt, pg):
+    a, b = pg, np.roll(pg, -1, axis=0); ab = b - a
+    t = np.clip(((pt - a) * ab).sum(1) / (ab**2).sum(1), 0, 1)
+    return np.hypot(*(a + t[:, None] * ab - pt).T).min()
+
+def neuron_holes(id_):
+    """H1 holes of the neurons of one animal, as centre and radius, entirely inside the section."""
+    p, pg = pts(id_, "Neurons"), poly(id_)
+    st = alpha_tree(p)
+    out = []
+    for birth, death in st.persistence_pairs():
+        if len(birth) == 2 and len(death) == 3:
+            ctr, r = enclosing_circle(p[list(death)])
+            out.append((ctr[0], ctr[1], r))
+    h = pd.DataFrame(out, columns=["cx", "cy", "r"])
+    inside = Path(pg).contains_points(h[["cx", "cy"]].to_numpy())
+    h = h[inside]
+    keep = [dist_to_polygon(np.array([c.cx, c.cy]), pg) >= c.r for c in h.itertuples()]
+    return h[keep].reset_index(drop=True)
+
+Holes = {i: neuron_holes(i) for i in IDS}
+
+# Typical spacing between neurons, and how many holes pass a few radius thresholds
+from scipy.spatial import cKDTree
+nn = np.median([np.median(cKDTree(pts(i, "Neurons")).query(pts(i, "Neurons"), k=2)[0][:, 1]) for i in IDS])
+n_small = [int((Holes[i].r >= 0.15).sum()) for i in IDS]
+```
+
+How big is "large"? The median distance between a neuron and its nearest neighbour is about `{python} f"{nn:.2f}"` mm, so a circle of 0.15 mm radius already spans about `{python} round(0.3 / nn)` cell spacings, and there are between `{python} min(n_small)` and `{python} max(n_small)` of them in a section. I use a minimum radius of 0.45 mm, which keeps the gaps that look like gaps by eye, and test other values below. The next chunk computes, per animal, the share of the section covered by holes of at least that radius and the share of microglia and astrocytes inside them. The ratio of the two is an **enrichment index**: 1 means the cells are in the holes as often as the area says, 2 means twice as often.
+
+```{python}
+#| label: Enrichment
+
+def grid_points(id_, step=0.025):
+    pg = poly(id_)
+    xs = np.arange(pg[:, 0].min(), pg[:, 0].max(), step); ys = np.arange(pg[:, 1].min(), pg[:, 1].max(), step)
+    G = np.c_[np.meshgrid(xs, ys)[0].ravel(), np.meshgrid(xs, ys)[1].ravel()]
+    return G[Path(pg).contains_points(G)]
+
+GRIDS = {i: grid_points(i) for i in IDS}
+
+def in_holes(P, h):
+    m = np.zeros(len(P), bool)
+    for c in h.itertuples():
+        m |= np.hypot(P[:, 0] - c.cx, P[:, 1] - c.cy) < c.r
+    return m
+
+def enrichment(min_r, min_area=0.02):
+    rows = []
+    for i in IDS:
+        h = Holes[i][Holes[i].r >= min_r]
+        area_frac = in_holes(GRIDS[i], h).mean()
+        row = dict(ID=i, DPI=DPI_OF[i], n_holes=len(h), area_frac=area_frac)
+        for tp in ["Microglia", "Astrocytes"]:
+            row["share_" + tp] = in_holes(pts(i, tp), h).mean()
+            # not defined when the holes cover almost nothing: the ratio would be noise
+            row["E_" + tp] = row["share_" + tp] / area_frac if area_frac >= min_area else np.nan
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+MIN_R = 0.45
+Enr = enrichment(MIN_R)
+```
+
+Before the figure, pause and predict. If microglia occupy the places where neurons are gone, which time point should show the strongest enrichment, and what do you expect for the astrocytes? Here is one section at 5D and one at 30D, with the holes drawn as circles.
+
+```{python}
+#| label: fig-Holes
+#| fig-cap: "Neurons (grey), microglia (orange) and the neuron holes of at least 0.45 mm radius (blue circles) in one animal at 5D (M01) and one at 30D (M14). The line is the outline of the section."
+#| fig-height: 6.5
+#| fig-width: 10
+
+fig, axes = plt.subplots(1, 2, figsize=(10, 6.5))
+for ax, i in zip(axes, ["M01", "M14"]):
+    pg = poly(i); ax.plot(*np.r_[pg, pg[:1]].T, color="black", lw=1)
+    n, m = pts(i, "Neurons"), pts(i, "Microglia")
+    ax.scatter(*n.T, s=3, color="#9A9A9A", alpha=0.8, label="Neurons")
+    ax.scatter(*m.T, s=3, color="#D55E00", alpha=0.7, label="Microglia")
+    for c in Holes[i][Holes[i].r >= MIN_R].itertuples():
+        ax.add_patch(plt.Circle((c.cx, c.cy), c.r, fill=False, color="#0072B2", lw=1.6))
+    ax.set_aspect("equal"); ax.set_title(f"{i} ({DPI_OF[i]})"); ax.set_xlabel("x (mm)")
+axes[0].set_ylabel("y (mm)"); axes[0].legend(markerscale=4, loc="lower left")
+plt.tight_layout(); plt.show()
+```
+
+The circles sit on the gaps between neuron patches, as they should. At 5D they are small and scattered; at 30D the largest ones overlap in the lower half of the section, and that is where the microglia (orange) are packed. At 5D there are microglia inside the circles too, but also all around them. The figure is one animal per time point, so the next chunk summarises all of them.
+
+```{python}
+#| label: fig-Enrichment
+#| fig-cap: "Enrichment of microglia and astrocytes in neuron holes of at least 0.45 mm radius: share of the cells inside the holes divided by the share of the section covered by the holes. One point per animal, black segment = median. Animals whose holes cover less than 2% of the section are left out."
+#| fig-height: 4.8
+#| fig-width: 10
+
+fig, axes = plt.subplots(1, 2, figsize=(10, 4.8), sharey=True)
+rng = np.random.default_rng(2026)
+for ax, tp in zip(axes, ["Microglia", "Astrocytes"]):
+    for k, d in enumerate(DPI_ORDER):
+        v = Enr.loc[Enr.DPI == d, "E_" + tp].dropna().to_numpy()
+        ax.scatter(k + rng.uniform(-0.12, 0.12, len(v)), v, color=DPI_COLS[d], s=36, alpha=0.8)
+        if len(v):
+            ax.hlines(np.median(v), k - 0.28, k + 0.28, color="black", lw=2.4)
+    ax.axhline(1, color="black", ls="--", lw=1); ax.set_yscale("log")
+    ax.set_ylim(0.35, 4.5); ax.set_yticks([0.5, 1, 2, 4]); ax.set_yticklabels(["0.5", "1", "2", "4"])
+    ax.set_xticks(range(4)); ax.set_xticklabels(DPI_ORDER); ax.set_title(tp)
+axes[0].set_ylabel("Enrichment (log scale)")
+plt.tight_layout(); plt.show()
+```
+
+```{python}
+#| label: Enrichment_table
+
+def boot_ci(v, n=2000, seed=2026):
+    r = np.random.default_rng(seed)
+    meds = [np.median(r.choice(v, len(v))) for _ in range(n)]
+    return np.percentile(meds, [2.5, 97.5])
+
+Summary = []
+for d in DPI_ORDER:
+    for tp in ["Microglia", "Astrocytes"]:
+        v = Enr.loc[Enr.DPI == d, "E_" + tp].dropna().to_numpy()
+        lo, hi = boot_ci(v) if len(v) > 1 else (np.nan, np.nan)
+        Summary.append(dict(DPI=d, Type=tp, Animals=len(v), Median=np.median(v) if len(v) else np.nan, Low=lo, High=hi))
+Summary = pd.DataFrame(Summary).round(2)
+Sm = lambda d, tp, col: f"{Summary[(Summary.DPI == d) & (Summary.Type == tp)][col].iloc[0]:.2f}"
+Na = lambda d, tp: int(Summary[(Summary.DPI == d) & (Summary.Type == tp)].Animals.iloc[0])
+Summary
+```
+
+For microglia, the enrichment is modestly above 1 at 5D (median `{python} Sm("5D", "Microglia", "Median")`) and climbs to `{python} Sm("15D", "Microglia", "Median")` at 15D and `{python} Sm("30D", "Microglia", "Median")` at 30D, where the bootstrap 95% interval of the median, resampling animals, runs from `{python} Sm("30D", "Microglia", "Low")` to `{python} Sm("30D", "Microglia", "High")`. Astrocytes behave differently: below 1 at 5D (`{python} Sm("5D", "Astrocytes", "Median")`) and 15D (`{python} Sm("15D", "Astrocytes", "Median")`), and above it at 30D (`{python} Sm("30D", "Astrocytes", "Median")`, but with an interval, `{python} Sm("30D", "Astrocytes", "Low")` to `{python} Sm("30D", "Astrocytes", "High")`, that includes 1). The control sections are the weak spot. Only `{python} Na("0D", "Microglia")` of the five have neuron holes of this size covering at least 2% of the section, so the control medians (`{python} Sm("0D", "Microglia", "Median")` for microglia, `{python} Sm("0D", "Astrocytes", "Median")` for astrocytes) rest on three animals and I would not read them. That, too, says something: before the injury there are hardly any large neuron-free regions to be inside of.
+
+This matches what I believe about the scar: microglia end up in the places where neurons have died, while astrocytes can still sit among neurons depending on the time after ischemia. I am describing, not explaining. The enrichment index cannot separate attraction from absence. A hole is defined by the absence of neurons, and any point that is not a neuron is more likely to be found there than the area alone predicts. In [the last part of the spatial series](https://github.com/daniel-manrique/TDS-Medium_Blog/tree/main/articles/2026-10-23_SpatialAnalysis_Part3) I needed a null that kept the scar to say anything about attraction, and the same demand applies here.
+
+# How big is a hole? {#sec-sensitivity}
+
+Everything above hangs on the 0.45 mm threshold. It was a choice, so I test it. The next chunk repeats the enrichment with a smaller (0.3 mm) and a larger (0.6 mm) threshold and reports the median per time point.
+
+```{python}
+#| label: Sensitivity
+
+Sens = []
+for r in [0.3, 0.45, 0.6]:
+    e = enrichment(r)
+    for d in DPI_ORDER:
+        for tp in ["Microglia", "Astrocytes"]:
+            v = e.loc[e.DPI == d, "E_" + tp].dropna()
+            Sens.append(dict(MinRadius=r, DPI=d, Type=tp, Animals=len(v), Median=round(v.median(), 2) if len(v) else np.nan))
+Sens = pd.DataFrame(Sens)
+Sens.pivot_table(index=["Type", "DPI"], columns="MinRadius", values="Median").round(2)
+```
+
+The shape holds for microglia across the three thresholds: the later the time point, the larger the enrichment. The values change, and in the controls the number of animals contributing changes too, which is why I do not interpret them. If a result flips when the threshold moves, it was the threshold. Here it does not flip, which is all I can say for a descriptive measure.
+
+Two limits sit in the place where you would object. First, only holes whose whole circle fits inside the section are kept, so a lesion that touches the edge of the section loses its edge-side holes; the numbers are conservative, not complete. Second, holes are only as good as the detector of the type that defines them. In my experience, segmenting neurons (NeuN) is easier than astrocytes (GFAP) or microglia (IBA1), so the neuron holes are the most trustworthy part of this analysis and the glial shares the least.
+
+Try it yourself with the data in the folder: lower `MIN_R` to 0.2 and look at the area covered by the holes in the control sections. What does that number say about how often "a hole" is just the normal gap between neurons?
+
+# Your turn
+
+- If you have several samples per unit (plots, regions, patients), what happens to your model when you validate by unit instead of by sample?
+- What point type in your data would you put inside the holes of another, and what would you want as a null before you called the result attraction?
+- If you think a Betti-curve model should have beaten the point count in my example, I want the counterargument, with the feature set that would do it.
+
+I read and answer every comment. The R companion of this post covers the nulls that calibrate a persistence summary; start there if the word *null* is still blurry.
+
+The code and data are in [the GitHub folder of this article](https://github.com/daniel-manrique/TDS-Medium_Blog/tree/main/articles/2026-10-28_TDA_Python).
+
+All images, unless otherwise stated, were generated using the displayed Python code.
