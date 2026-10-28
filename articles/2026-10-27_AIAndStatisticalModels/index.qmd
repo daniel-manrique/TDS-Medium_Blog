@@ -1,0 +1,90 @@
+---
+title: "The Code Runs. That Doesn't Mean the Model Is Right."
+subtitle: "AI is a superb pair of hands for statistical code. Deciding which model could have generated your data is still your job."
+keywords:
+  - Statistical modelling
+  - AI
+  - Bayesian statistics
+  - Distributions
+  - Research integrity
+---
+
+The code ran without a single warning.
+
+I have seen what comes next: a person runs a model that an AI assistant wrote for them, the console prints a tidy table of coefficients and intervals, and they cannot say what the model is answering. The table is real, the code is correct in the narrow sense that every line does what it says, and nothing in the whole exchange has asked the one question that matters, which is whether this model is a believable account of how those numbers came to exist. The code ran, and that is all it told us.
+
+I believe AI is an excellent tool for optimising statistical work, and that it cannot replace the scientific knowledge that decides whether a model is valid. A valid model is one that could have generated your data, and only someone who understands where the data came from can judge that. Let me defend both halves of that sentence, because I mean both.
+
+::: {.callout-note}
+## What you'll take away
+
+- AI can write, fix and translate statistical code faster than most of us, and I would not give that up.
+- A statistical model is a claim about the process that produced your data, and no assistant can check that claim for you.
+- Responsibility for a model sits with the scientist, so I offer four habits that keep the judgment where it belongs.
+:::
+
+# The honest part
+
+Let me begin with what I am not going to argue. An assistant can write the `ggplot2` call that took you an hour of documentation, translate a model from one package to another, spot the missing comma in a formula, and explain an error message in plain language at three in the afternoon, when your patience is gone. Anyone who has spent a day fighting syntax knows what that is worth, and I think refusing it on principle is a kind of vanity. Time spent on boilerplate is time not spent on the question.
+
+But look at what those tasks have in common. In every one of them, the correct answer is visible to the person asking: the plot looks right or it does not, the error disappears or it does not. The assistant is writing something whose success you can see. A statistical model is different, because a wrong one does not crash, does not warn and does not look wrong; it returns an answer with the same confidence as a right one. Which brings me to what a model is actually for.
+
+# What a model is for
+
+When I say that a valid model is one that could have generated the data, I am borrowing a way of thinking that McElreath presents in *Statistical Rethinking* under the image of the golem of Prague, a clay creature that does exactly what it is told and has no idea what it is doing [@mcelreath2020k]. A statistical model is a golem. It will multiply, add and fit with great diligence, and it will do so equally well for a sensible question and a senseless one. The same book repeats the familiar line that all models are wrong, and the point of repeating it is not to excuse sloppiness: no model is the truth, but some of them describe a world in which your data could plausibly have happened, and some describe a world in which they could not.
+
+I find it useful to think of a model as a translator who is fluent in a language you do not speak. Everything it hands you reads beautifully, the grammar is flawless, the sentences are confident, and you have no way of knowing whether it is faithfully reporting what your data said or inventing something elegant in its place. An AI assistant is a very fast and very fluent translator between your question and a statistical language. If you speak that language, you catch the mistranslations, and the speed is a gift. If you do not, you have a fluent text and no means of reading it.
+
+The practical test is a simple one, and it does not require the assistant at all: could this model, run forward as a simulation, produce data that look like mine? That question is the bridge between statistics and the laboratory, and it is the one I think cannot be delegated.
+
+# What only the bench knows
+
+Here is why. Take the neurological score I use after an ischemic stroke in mice, the Bederson score, which runs from 0 to 5. Those are ordered categories: a 4 is worse than a 2, but nobody has shown that the distance from 0 to 1 equals the distance from 3 to 4. The column in your spreadsheet looks like a number, and an assistant that is asked for a comparison between groups will treat it as one, because that is what the column looks like. Knowing that it is ordinal does not come from the file. It comes from knowing how the score is assigned, by whom, on what behaviour, and I do not see how an assistant could learn that from a CSV.
+
+The case that matters most to me is the zero. Cell counts in a tissue section are full of zeros, and a zero can mean two very different things. It can mean that what you are looking for does not exist in that region, or it can mean that it exists and you were not able to measure it. I know the second one well. Segmenting astrocytes or microglia in dense, overlapping tissue is genuinely hard, and when a cell is split into several fragments, or several cells are merged into one, the count you get says little about the biology. Ecologists have a clear vocabulary for this: Blasco-Moreno and colleagues separate false zeros, caused by errors of design or observation, from structural zeros, which reflect a real constraint of the system, and from random zeros, which are simply sampling variability, and they argue that telling them apart is what should drive the choice of model [@blasco-moreno2019]. Mixing two sources of zeros into a single process is the problem that zero-inflated models were built to handle [@lambert1992].
+
+The consequence is concrete, and it is the heart of my argument. A true absence and a failure to measure call for different distributions in a Bayesian framework, each with its own assumptions about where the zeros come from, and which one is appropriate depends on a fact that is not in the dataset: what happened at the microscope. No amount of fluency with `brms` syntax can tell you whether a zero in your table is biology or a failed segmentation. The distribution you choose is a statement about the world, and in my work that world is a brain slice, not a spreadsheet. The Gaussian, I am afraid, does not even ask. It happily allows a count of minus two cells.
+
+# The obliging collaborator
+
+You might say that a good assistant would simply ask. Sometimes it does, and I will come back to that, but first look at what the evidence says, because I want to be careful not to claim more than it shows. A study published in *Cureus* gave six widely used assistants twenty scenarios in which a hypothesis test had to be chosen, and all six picked the right one every time [@shukla2025]. I take that seriously, and I also note that I could read only the abstract, that twenty scenarios is a small number, and that scenarios written to be unambiguous hand the assistant everything it needs.
+
+A different benchmark, StatQA, asked a larger question: not which test, but whether a method is *applicable* to a given dataset and problem. Across 11,623 examples the best model tested, GPT-4o, reached about 65% at most, and the authors found that the models mainly erred on applicability, while the humans in their comparison mostly mixed up the type of task [@zhu2024]. My reading of the two studies together, and it is a reading, not a finding of theirs, is that choosing a method is easy when the prompt contains the information that decides it, and hard when that information is somewhere else. Both studies used models from their time, and tools change quickly, so I would not stake my case on the exact numbers. I would stake it on the structure: the facts that settle the question, such as where the zeros come from, usually are not in the prompt.
+
+There is a second problem, and it concerns not what the assistant knows but how it behaves. Sharma and colleagues tested five assistants and found that all of them showed sycophancy, a tendency to give answers that match the user's views, and that people and preference models sometimes preferred a well-written agreeable answer to a correct one [@sharma2023]. If you ask for a t-test on an ordinal score, my expectation is that you will get a t-test, probably with a polite caveat that is easy to scroll past. I believe this is the quiet danger: not that the assistant is wrong, but that it is obliging, and an obliging collaborator is only as good as the questions of the person it obliges.
+
+# The best objection
+
+So here is the strongest version of the case against me, and I want to give it its due. The assistant has read more statistics than I ever will. Ask it which distribution suits ordinal data with excess zeros and it will name the right families, explain them and write the code, and ask it to check its own assumptions and it will often do so honestly. If the knowledge is in the model, why should the scientist also carry it? Is this not simply the calculator again, and did we not survive the calculator?
+
+I think the objection is right about the facts and wrong about the conclusion. It is right that an assistant frequently knows the correct family, and in a growing number of cases it will ask what you meant. But it can only ask about what it knows to ask, and the question that decides your model, which zeros are biology and which are failures, is one that you have to recognise as a question before you can answer it. A person who does not know that there are two kinds of zero will answer "does the data have many zeros?" with a yes and move on. The calculator comparison fails for the same reason: when a calculator gives a wrong answer it is because I typed the wrong number, and I can see that; when a model gives a wrong answer it is because I asked the wrong question, and that I cannot see without the knowledge the assistant was meant to replace.
+
+# Whose name is on the model
+
+Underneath all of this there is something simpler than epistemology, and it is responsibility. A computer cannot be responsible for a statistical model, and the ones responsible are the scientists, the people whose names go on the paper. I would say the same thing to a doctoral student who tells me, with some pride, that the whole analysis was done with an assistant: it is an excellent tool for making your work efficient, and I would use it, but the day a reviewer asks you why you chose that distribution, "it was suggested" is not an answer that belongs to anyone.
+
+The cost is not abstract either. In my field the data come from animals whose use was justified by the knowledge they were supposed to produce, and from public money, so a model that fits the wrong process turns them into a false conclusion with a confident confidence interval. What is lost is the animal, the grant, and the months of whoever collected the data, and, later, the time of those who build on a result that was never true. This is what I mean when I say that choosing a model is an ethical matter and not a technical nicety.
+
+# What I would do
+
+I do not have evidence that these habits work; they are bets, and I offer them as such. The first is to **say the process in words before you write any code**: where did these numbers come from, which values are possible, and what would a zero mean? If you cannot answer that in two sentences, no syntax will rescue you. The second is to **simulate before you fit**. Generate data from the model you are about to use and see whether it looks anything like what you measured; in a Bayesian workflow this is what prior and posterior predictive checks are for, and it is the nearest thing I know to asking the golem to show its work.
+
+The third is to **use the assistant to attack your model, not to write it**. Describe the process and ask what would break the model, which assumptions it makes, and what a different source of zeros would imply, and then check the answers against what you know of the bench. The fourth is aimed at those who teach, myself included: **learn distributions before packages**. A student who understands what a negative binomial says about a count will recognise a bad model on sight, and a student who only knows the function name will not, however good the assistant sitting beside them.
+
+# Your turn
+
+I would like to hear how this looks in your field:
+
+- When did you last accept a model because the code ran without errors? How did you find out whether it was right?
+- What process hides behind your data that an assistant could not guess from the file, a zero that is not a zero, a score that is not a number?
+- If you teach or supervise: what do you tell students about using assistants for analysis, and where do you draw the line?
+- If you think assistants can already carry this judgment in your area, I want your counterargument. What evidence would change my mind?
+
+I read and answer every comment.
+
+You can find the sources and the working copy of this essay in the [GitHub repository](https://github.com/daniel-manrique/TDS-Medium_Blog/tree/main/articles/2026-10-27_AIAndStatisticalModels).
+
+# References
+
+::: {#refs}
+:::

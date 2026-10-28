@@ -361,9 +361,6 @@ knitr::kable(Summary_df, digits = 2,
 ```
 
 Read the neurons first. At 0D and 30D the posterior sits below zero, with a probability of being above zero of `r sprintf("%.2f", Summary_df$P_above_0[Summary_df$Cell == "Neurons" & Summary_df$DPI == "0D"])` and `r sprintf("%.2f", Summary_df$P_above_0[Summary_df$Cell == "Neurons" & Summary_df$DPI == "30D"])`; at 5D that probability is `r sprintf("%.2f", Summary_df$P_above_0[Summary_df$Cell == "Neurons" & Summary_df$DPI == "5D"])`. That is the sign change from the `mppm` table, now with the animal as the unit and the uncertainty shown instead of hidden. For microglia, the posterior median at 15D is `r sprintf("%.1f", Summary_df$Median[Summary_df$Cell == "Microglia" & Summary_df$DPI == "15D"])` on the log2 scale, which is about `r sprintf("%.1f", 2^Summary_df$Median[Summary_df$Cell == "Microglia" & Summary_df$DPI == "15D"])` times more microglia in the astrocyte-rich compartment. At 30D the median is `r sprintf("%.1f", Summary_df$Median[Summary_df$Cell == "Microglia" & Summary_df$DPI == "30D"])`, about `r sprintf("%.0f", 2^Summary_df$Median[Summary_df$Cell == "Microglia" & Summary_df$DPI == "30D"])` times. At 0D and 5D the interval includes zero, so I see no gradient there.
-
-<!-- TODO(Daniel): interpretación biológica del cambio de signo de neuronas a 5D; el texto solo describe los datos -->
-
 This is what I find useful about the relative approach: it answers a question about the arrangement of the tissue, and it does so with the animal as the unit of analysis.
 
 # Where this breaks
