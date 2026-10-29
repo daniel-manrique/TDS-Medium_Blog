@@ -1,0 +1,428 @@
+---
+title: "Mapper Draws the Map of Your Point Cloud. A Shuffled Null Tells You Which Roads Are Real."
+subtitle: "Mapper in Python for any labelled point cloud: neighbourhood features, a lens and stability checks. Worked example: glial cells after ischemia."
+keywords:
+  - Topological data analysis
+  - Mapper
+  - Point clouds
+  - Spatial analysis
+jupyter: python3
+---
+
+```{python}
+#| label: LoadPack
+#| include: false
+
+import os, pickle, warnings
+warnings.filterwarnings("ignore")
+
+import numpy as np
+import pandas as pd
+import networkx as nx
+import matplotlib.pyplot as plt
+import matplotlib.patheffects as pe
+from matplotlib.path import Path
+from scipy.spatial import cKDTree
+from sklearn.cluster import DBSCAN
+
+plt.rcParams.update({
+    "font.size": 12, "axes.titlesize": 13, "axes.titleweight": "bold", "axes.labelsize": 12,
+    "axes.spines.top": False, "axes.spines.right": False, "axes.linewidth": 1.2,
+    "figure.dpi": 110, "legend.frameon": False,
+})
+
+TYPES = ["Neurons", "Astrocytes", "Microglia"]
+DAYS = {"0D": 0, "5D": 5, "15D": 15, "30D": 30}
+```
+
+I ran Mapper twice on the same 75,013 cells, with the same lens, and changed three numbers: how many intervals to cut, how much they overlap and how tightly to cluster inside each. One run drew a bare line of 6 nodes. The other drew 16 nodes, split in 2 pieces, with 2 forks. Both graphs came from the same data and both looked like findings.
+
+I believe a Mapper graph is a hypothesis, not a result. The algorithm will always hand you a picture, and the picture will always have a shape. What decides whether a branch of that picture deserves a sentence in your paper is whether it comes back when you change the parameters, when you drop animals, and when the labels are shuffled. This post builds Mapper from scratch for any labelled point cloud, applies it to cells in a glial scar, and then tests the branches one by one. Spoiler: most do not survive.
+
+::: {.callout-note}
+## What you'll take away
+
+- What **Mapper** does, in four moves (lens, cover, clustering, graph), and a 25-line Python function that implements it with `scikit-learn` and `networkx`.
+- How to turn a point cloud with labels into **neighbourhood features** that Mapper can work with, and why a hard-radius count breaks the clustering step.
+- Three cheap controls for any Mapper graph: a **parameter grid**, **resampling by group** and a **label-shuffled null**, and how to read which branches survive.
+:::
+
+Mapper comes from topological data analysis [@singh2007]. If you have followed this series, it is a cousin of persistent homology: both summarise the shape of a dataset, but where persistence counts holes, Mapper hands you a graph that you can look at, colour and walk along. It has been used to find patient subgroups that standard clustering splits apart [@lum2013; @nicolau2011], and that is its appeal. It is also its risk, because a graph that is easy to read is easy to over-read.
+
+# Mapper in four moves {#sec-moves}
+
+Think of a topographic survey. You cut the country into altitude bands that overlap a little, in each band you look for separate settlements, and you join two settlements if they share a house in the overlap between bands. The result is not a photograph of the country; it is a sketch of how its parts connect. Mapper does the same with data, in four moves [@singh2007]:
+
+1. **Lens.** Choose a function that gives every point one number (altitude, here).
+2. **Cover.** Cut the range of that number into overlapping intervals.
+3. **Cluster.** Inside each interval, cluster the points. Each cluster becomes a node.
+4. **Graph.** Join two nodes if their clusters share at least one point.
+
+Each move is a decision that the algorithm does not make for you: which lens, how many intervals, how much overlap, which clustering rule. The function below is the whole algorithm. It takes the features `X` that the clustering sees, the lens values `lens`, the number of intervals `n`, the overlap `g` (a fraction of each interval), and the clustering scale `eps`.
+
+```{python}
+#| label: Mapper_function
+
+def mapper(X, lens, n=10, g=0.4, eps=0.3, mins=20, min_node=30):
+    lo, hi = lens.min(), lens.max()
+    width = (hi - lo) / (n - (n - 1) * g)        # n equal intervals that span the lens range
+    step = width * (1 - g)                       # neighbours overlap by a fraction g
+    nodes = []
+    for k in range(n):
+        a = lo + k * step
+        idx = np.where((lens >= a) & (lens <= a + width))[0]          # move 2: the points in this interval
+        if len(idx) < mins:
+            continue
+        lab = DBSCAN(eps=eps, min_samples=mins).fit_predict(X[idx])   # move 3: cluster inside it
+        nodes += [(k, idx[lab == c]) for c in set(lab) - {-1} if (lab == c).sum() >= min_node]
+    G = nx.Graph()
+    for j, (k, idx) in enumerate(nodes):
+        G.add_node(j, k=k, idx=idx)
+    sets = [set(idx) for _, idx in nodes]
+    for a in range(len(nodes)):                  # move 4: an edge when two clusters share a point
+        for b in range(a + 1, len(nodes)):
+            if not sets[a].isdisjoint(sets[b]):
+                G.add_edge(a, b)
+    return G
+
+def shape(G):
+    """Summaries of a graph: nodes, components, loops and forks (nodes with 3+ neighbours)."""
+    V, E, C = G.number_of_nodes(), G.number_of_edges(), nx.number_connected_components(G)
+    return dict(V=V, comp=C, loops=E - V + C, branch=sum(d >= 3 for _, d in G.degree()))
+```
+
+Two choices in this code are worth a sentence. `DBSCAN` is my choice of clustering rule; the original method accepts any clustering algorithm [@singh2007]. And `min_node` drops tiny clusters, so a node always has at least 30 points behind it. The overlap `g` stays below one half so that a point belongs to at most two intervals and the result is a graph rather than something higher-dimensional; the authors who studied Mapper statistically recommend between a third and a half [@carriere2018jmlr], and I use 0.4.
+
+To see the moves at work, I use the smallest example that has a shape: a noisy ring, with the horizontal coordinate as the lens. If the cover is too coarse, the two arcs of the ring that sit in the same interval are clustered together and the loop disappears.
+
+```{python}
+#| label: fig-Toy
+#| fig-cap: "Mapper on a noisy ring with the horizontal coordinate as lens. Left: the points. Centre: two intervals recover a line. Right: six intervals recover the loop. Nodes are drawn at the centre of their cluster."
+#| fig-height: 4
+#| fig-width: 11
+
+rng = np.random.default_rng(2026)
+th = rng.uniform(0, 2 * np.pi, 1500)
+ring = np.c_[np.cos(th), np.sin(th)] + rng.normal(0, 0.06, (1500, 2))
+
+def draw_toy(ax, G):
+    pos = {j: ring[d["idx"]].mean(0) for j, d in G.nodes(data=True)}
+    ax.scatter(*ring.T, s=3, color="0.85")
+    nx.draw_networkx(G, pos, ax=ax, node_color="#D55E00", node_size=[len(d["idx"]) / 4 for _, d in G.nodes(data=True)],
+                     edge_color="0.3", width=2, with_labels=False)
+    ax.set_aspect("equal"); ax.axis("off")
+
+G_coarse = mapper(ring, ring[:, 0], n=2, g=0.3, eps=0.15, mins=5, min_node=5)
+G_fine = mapper(ring, ring[:, 0], n=6, g=0.3, eps=0.15, mins=5, min_node=5)
+fig, ax = plt.subplots(1, 3, figsize=(11, 4))
+ax[0].scatter(*ring.T, s=3, c=ring[:, 0], cmap="viridis"); ax[0].set_title("Points coloured by the lens"); ax[0].set_aspect("equal"); ax[0].axis("off")
+draw_toy(ax[1], G_coarse); ax[1].set_title("2 intervals: a line")
+draw_toy(ax[2], G_fine); ax[2].set_title("6 intervals: a loop")
+plt.tight_layout(); plt.show()
+```
+
+The ring has one hole and the six-interval graph has one loop; the two-interval graph has none. Same points, same lens, same clustering rule. That is the sensitivity I want you to keep in mind for the rest of the post: Mapper does not measure the shape of your data, it measures the shape of your data as seen through one cover.
+
+# From coordinates to neighbourhoods {#sec-data}
+
+Mapper needs features per point. A cloud of coordinates has two numbers per point, and clustering on them would only recover where things are, not what is around them. For a labelled point cloud, the natural features are about the **neighbourhood**: what is around each point, of which types, and how crowded it is. My data are the positions of neurons, astrocytes and microglia in sections of ischemic tissue at 0, 5, 15 and 30 days after ischemia (DPI; 0D are controls), the same data as the rest of the series, exported to two CSV files so that no R is needed. To reuse the code you need one table with `x`, `y`, a type label and a sample ID.
+
+```{python}
+#| label: LoadData
+
+cells = pd.read_csv("data/cells.csv")
+windows = pd.read_csv("data/windows.csv")
+DPI_OF = cells.groupby("ID")["DPI"].first()
+ids = cells.ID.to_numpy()
+days = cells.DPI.map(DAYS).to_numpy()
+```
+
+The table holds `{python} f"{len(cells):,}"` cells from `{python} len(DPI_OF)` animals.
+
+My first attempt was the obvious one: count the cells of each type within 100 µm of every cell, and cluster those counts. The counts are small integers, so the points sit on a lattice, and `DBSCAN` finds each lattice point as its own cluster. The lens in all that follows is the local density, the number of cells of any type within 200 µm (coordinates are in millimetres). I chose it because it does not depend on the labels, which matters for the null later, and because in my sections the scar is, among other things, a density gradient.
+
+```{python}
+#| label: Naive_counts
+
+def local_density(df, radius=0.2):
+    out = []
+    for _, g in df.groupby("ID", sort=False):
+        P = g[["x", "y"]].to_numpy()
+        out.append([len(n) - 1 for n in cKDTree(P).query_ball_point(P, radius)])
+    return np.concatenate(out).astype(float)
+
+lens = local_density(cells)
+
+def hard_counts(df, radius=0.1):
+    out = []
+    for _, g in df.groupby("ID", sort=False):
+        P, lab = g[["x", "y"]].to_numpy(), g["Type"].to_numpy()
+        nb = cKDTree(P).query_ball_point(P, radius)
+        out.append(np.column_stack([[(lab[n] == tp).sum() - (lab[i] == tp) for i, n in enumerate(nb)] for tp in TYPES]))
+    return np.vstack(out).astype(float)
+
+C = hard_counts(cells)
+G_naive = mapper((C - C.mean(0)) / C.std(0), lens, n=10, g=0.4, eps=0.6, mins=15, min_node=30)
+naive = shape(G_naive)
+```
+
+The graph has `{python} naive["V"]` nodes in `{python} naive["comp"]` components. That is not a shape, it is a lattice reported as structure. The fix is to replace the hard radius with a smooth one: every neighbour contributes with a weight that falls off with distance, a Gaussian with a spread of 50 µm, truncated at 150 µm. The features become continuous, and clusters can form where the neighbourhoods look alike.
+
+```{python}
+#| label: Neighbourhood
+
+SIG = 0.05   # mm: spread of the Gaussian weight
+
+def neighbourhood(df, labels=None):
+    """Weighted count of each type around each cell (the cell itself is excluded)."""
+    out = []
+    for _, g in df.groupby("ID", sort=False):
+        P = g[["x", "y"]].to_numpy()
+        lab = (g["Type"] if labels is None else labels[g.index]).to_numpy()
+        S = cKDTree(P).sparse_distance_matrix(cKDTree(P), 3 * SIG).tocsr()
+        S.data = np.exp(-S.data ** 2 / (2 * SIG ** 2)); S.setdiag(0); S.eliminate_zeros()
+        out.append(pd.DataFrame(np.column_stack([S @ (lab == tp).astype(float) for tp in TYPES]),
+                                index=g.index, columns=TYPES))
+    return pd.concat(out).loc[df.index]
+
+F = neighbourhood(cells)
+Fm, Fs = F.mean(), F.std()
+X = ((F - Fm) / Fs).to_numpy()      # what the clustering sees
+Fraw = F.to_numpy()                 # what we interpret
+```
+
+A word on these choices, because they are mine and not a standard. I did not find a rule for the size of a cellular neighbourhood in the sources I worked from, so 50 µm and 150 µm come from the scale of the spatial analysis earlier in this series, and the Gaussian is a convenience. The numbers in the next sections move if you change them, and you should try it (see the end).
+
+# The first graph {#sec-graph}
+
+Now the algorithm runs on the smoothed features. I fix a reference setting in the middle of every range I explore later: ten intervals, 40% overlap and a clustering scale of 0.3 in standardised units. The table summarises what each node holds.
+
+```{python}
+#| label: Reference_graph
+
+REF = dict(n=10, g=0.4, eps=0.3, mins=20, min_node=30)
+G = mapper(X, lens, **REF)
+
+def node_table(G):
+    rows = []
+    for j, d in G.nodes(data=True):
+        m = d["idx"]
+        rows.append(dict(node=j, band=d["k"], cells=len(m), density=lens[m].mean(), neighbours=G.degree(j),
+                         Neurons=Fraw[m, 0].mean(), Astrocytes=Fraw[m, 1].mean(), Microglia=Fraw[m, 2].mean(),
+                         animals=len(set(ids[m])), mean_days=days[m].mean()))
+    return pd.DataFrame(rows).set_index("node")
+
+T = node_table(G)
+ref_shape = shape(G)
+T.round(2)
+```
+
+Read the table from the top. Nodes 0 to 5 form a chain, one node per density band, from sparse tissue (`{python} f"{T.density.iloc[0]:.1f}"` cells within 200 µm) to crowded tissue (`{python} f"{T.density.iloc[5]:.1f}"`). Along the chain, the share of astrocytes grows and the cells come less from the controls: mean days after ischemia rises from `{python} f"{T.mean_days.iloc[0]:.1f}"` to `{python} f"{T.mean_days.iloc[5]:.1f}"`. At the crowded end the chain forks into nodes 6 to 9, four small neighbourhoods of between `{python} int(T.cells.iloc[6:].min())` and `{python} int(T.cells.iloc[6:].max())` cells.
+
+```{python}
+#| label: Graph_helpers
+
+def layout(G, T):
+    """Lens on the horizontal axis; nodes of one band are stacked, ordered by microglia share."""
+    pos = {}
+    for k, grp in T.groupby("band"):
+        grp = grp.sort_values("Microglia")
+        for r, j in enumerate(grp.index):
+            pos[j] = (grp.density[j], r - (len(grp) - 1) / 2)
+    return pos
+
+def draw(ax, G, T, color, cmap, label, vmin=None, vmax=None, annotate=False):
+    pos = layout(G, T)
+    nx.draw_networkx_edges(G, pos, ax=ax, width=2, edge_color="0.55")
+    sc = ax.scatter(*np.array([pos[j] for j in G.nodes]).T, s=40 + 700 * np.sqrt(T.cells / T.cells.max()),
+                    c=color, cmap=cmap, vmin=vmin, vmax=vmax, edgecolor="k", linewidth=0.8, zorder=3)
+    if annotate:
+        for j in G.nodes:
+            ax.annotate(str(j), pos[j], ha="center", va="center", fontsize=9, color="w", zorder=4,
+                        path_effects=[pe.withStroke(linewidth=2, foreground="k")])
+    ax.set_xlabel("Local density (cells within 200 µm)"); ax.set_yticks([])
+    ax.spines["left"].set_visible(False)
+    return sc
+```
+
+```{python}
+#| label: fig-Graph
+#| fig-cap: "Mapper graph of 75,013 cells in 31 animals. Each node is a group of cells with similar neighbourhoods in one density band; its area is proportional to the square root of its cell count. Left: microglia in the neighbourhood. Right: mean days after ischemia of the cells in the node."
+#| fig-height: 4.6
+#| fig-width: 11.5
+
+fig, ax = plt.subplots(1, 2, figsize=(11.5, 4.6), sharex=True)
+sc = draw(ax[0], G, T, T.Microglia, "magma", "", annotate=True)
+plt.colorbar(sc, ax=ax[0], label="Microglia in the neighbourhood (weighted count)", shrink=0.8)
+ax[0].set_title("What surrounds the cells")
+sc = draw(ax[1], G, T, T.mean_days, "viridis", "", annotate=True)
+plt.colorbar(sc, ax=ax[1], label="Mean days after ischemia", shrink=0.8)
+ax[1].set_title("When the cells were sampled")
+plt.tight_layout(); plt.show()
+```
+
+Here is my reading of this graph, and I flag it as a reading. The trunk is the density gradient of the scar: the denser the tissue, the more astrocytes around each cell and the later the time point. The four leaves are the interesting part. Node 6 holds `{python} int(T.cells[6])` cells whose neighbourhood is almost all glia, microglia and astrocytes together with hardly any neurons, from `{python} int(T.animals[6])` of the `{python} len(DPI_OF)` animals and from none of the controls. It looks like the core of a glial scar. I would be tempted to write that sentence in a paper. The rest of the post is about why I should not yet.
+
+The two runs from the opening are in the next figure. Nothing in them is wrong; they are two answers to two different questions about the same cells.
+
+```{python}
+#| label: fig-TwoGraphs
+#| fig-cap: "The same cells, the same lens, two settings. Left: 8 intervals, 50% overlap, clustering scale 0.45. Right: 12 intervals, 30% overlap, clustering scale 0.2. Node colour is the microglia in the neighbourhood, as in the previous figure."
+#| fig-height: 4.2
+#| fig-width: 11
+
+HOOK = {}
+fig, ax = plt.subplots(1, 2, figsize=(11, 4.2), sharex=True)
+for a, key, (n, g, eps) in zip(ax, "AB", [(8, 0.5, 0.45), (12, 0.3, 0.2)]):
+    Gx = mapper(X, lens, n=n, g=g, eps=eps); Tx = node_table(Gx); HOOK[key] = shape(Gx)
+    draw(a, Gx, Tx, Tx.Microglia, "magma", "", vmin=T.Microglia.min(), vmax=T.Microglia.max())
+    a.set_title(f"{HOOK[key]['V']} nodes, {HOOK[key]['comp']} piece(s), {HOOK[key]['branch']} fork(s)")
+plt.tight_layout(); plt.show()
+assert (HOOK["A"]["V"], HOOK["B"]["V"], HOOK["B"]["comp"], HOOK["B"]["branch"]) == (6, 16, 2, 2)
+```
+
+# Do the branches survive? {#sec-checks}
+
+Pause and predict. If I shuffle the type labels among the cells of each animal, so that positions and density are untouched but "who is a microglia" is random, how many forks do you expect in the graph? Zero, because nothing is left to find? Hold the thought; the answer comes below.
+
+I use three controls, in order of increasing cost. To know whether a node of the reference graph comes back in another graph I need a definition of "comes back". A node is **recovered** if the other graph has a node whose mean density is within 2 cells of it and whose mean neighbourhood composition is within 0.3 (in the units of the weighted counts, where the spread of each feature is about 0.6) of it. These tolerances are mine; they are loose enough to forgive small shifts and tight enough that a neighbourhood with no neurons does not match one with many.
+
+```{python}
+#| label: Checks_helpers
+
+def signature(G):
+    return np.array([[lens[d["idx"]].mean(), *Fraw[d["idx"]].mean(0)] for _, d in G.nodes(data=True)])
+
+REF_SIG = signature(G)
+
+def recovered(S, density_tol=2.0, comp_tol=0.3):
+    """For each node of the reference graph: does a graph with node signatures S contain it?"""
+    out = []
+    for s in REF_SIG:
+        if len(S) == 0:
+            out.append(0); continue
+        near = np.abs(S[:, 0] - s[0]) <= density_tol
+        out.append(int((near & (np.linalg.norm(S[:, 1:] - s[1:], axis=1) < comp_tol)).any()))
+    return out
+```
+
+**Check 1, a parameter grid.** I rerun Mapper with 5 numbers of intervals (6 to 15), 3 overlaps (0.3, 0.4, 0.5) and 3 clustering scales (0.2, 0.3, 0.45): 45 graphs. A branch that exists in one corner of the grid only is a property of that corner. The theory says the same: standard Mapper on a single cover has no simple stability guarantee [@dey2016], and its multiscale version, which looks at a tower of covers, does. The grid is a poor man's version of that idea.
+
+**Check 2, resampling by animal.** Cells of one animal are not independent, so the unit to resample is the animal. I draw 75% of the animals without replacement, 100 times, and rerun the reference setting. I tried resampling with replacement first and dropped it: duplicated animals create duplicated points, which make dense cores out of nothing and inflate the number of forks. A bootstrap with confidence regions exists for the one-dimensional Mapper with a scalar lens [@carriere2018jmlr; @carriere2018structure], resampling the points and reading the extended persistence diagram of the graph; it is the principled version and mine is the applied one. It answers a simpler question: does this neighbourhood come back when other animals are in the sample?
+
+**Check 3, a label-shuffled null.** I permute the type labels among the cells of each animal, recompute the neighbourhoods and rerun the reference setting, 100 times. The lens does not change, because density does not depend on labels, so the null keeps the density axis and destroys any link between position and type. The sources I read do not propose a null of this kind for Mapper, so it is my own construction, a proposal to criticise rather than a standard.
+
+```{python}
+#| label: Run_checks
+
+CACHE = "models/mapper_checks.pkl"
+if os.path.exists(CACHE):
+    chk = pickle.load(open(CACHE, "rb"))
+else:
+    rng = np.random.default_rng(2026)
+    animals = np.array(sorted(set(ids))); rows_of = {a: np.where(ids == a)[0] for a in animals}
+    grid, grid_rec = [], []
+    for n in (6, 8, 10, 12, 15):
+        for g in (0.3, 0.4, 0.5):
+            for eps in (0.2, 0.3, 0.45):
+                Gx = mapper(X, lens, n=n, g=g, eps=eps)
+                grid.append(dict(n=n, g=g, eps=eps, **shape(Gx))); grid_rec.append(recovered(signature(Gx)))
+    sub, sub_rec = [], []
+    for b in range(100):
+        keep = np.concatenate([rows_of[a] for a in rng.choice(animals, 23, replace=False)])
+        Gx = mapper(X[keep], lens[keep], **REF)
+        S = np.array([[lens[keep][d["idx"]].mean(), *Fraw[keep][d["idx"]].mean(0)] for _, d in Gx.nodes(data=True)])
+        sub.append(shape(Gx)); sub_rec.append(recovered(S))
+    null, null_rec = [], []
+    for b in range(100):
+        shuffled = cells["Type"].copy()
+        for a in animals:
+            shuffled.iloc[rows_of[a]] = rng.permutation(cells["Type"].to_numpy()[rows_of[a]])
+        Fn = neighbourhood(cells, shuffled)
+        Gx = mapper(((Fn - Fm) / Fs).to_numpy(), lens, **REF)
+        S = np.array([[lens[d["idx"]].mean(), *Fn.to_numpy()[d["idx"]].mean(0)] for _, d in Gx.nodes(data=True)])
+        null.append(shape(Gx)); null_rec.append(recovered(S))
+    chk = dict(grid=pd.DataFrame(grid), grid_rec=np.array(grid_rec), sub=pd.DataFrame(sub), sub_rec=np.array(sub_rec),
+               null=pd.DataFrame(null), null_rec=np.array(null_rec))
+    pickle.dump(chk, open(CACHE, "wb"))
+
+rec = pd.DataFrame(dict(parameter_grid=chk["grid_rec"].mean(0), animal_subsample=chk["sub_rec"].mean(0),
+                        shuffled_null=chk["null_rec"].mean(0)), index=T.index)
+```
+
+The first thing the checks say is about the shape of the whole graph, and it is humbling. Across the grid, the number of forks goes from `{python} int(chk["grid"].branch.min())` to `{python} int(chk["grid"].branch.max())`, the number of components from `{python} int(chk["grid"].comp.min())` to `{python} int(chk["grid"].comp.max())`, and the number of loops reaches `{python} int(chk["grid"].loops.max())` in some corner. Under shuffled labels, the median graph has `{python} int(chk["null"].branch.median())` fork and `{python} int(chk["null"].V.median())` nodes, against `{python} ref_shape["branch"]` fork and `{python} ref_shape["V"]` nodes in the real data. So here is the answer to the prediction: shuffled labels do not give a graph without forks. The count of forks and nodes of the observed graph sits inside what random labels produce, and it cannot be used as evidence of anything. If you only compare the number of branches to a null, you will conclude that there is nothing in your data.
+
+The nodes tell a different story, because a node has a composition and the count of forks does not.
+
+```{python}
+#| label: fig-Recovery
+#| fig-cap: "Share of runs in which each node of the reference graph is recovered, by control. Nodes 0 to 5 are the trunk; nodes 6 to 9 are the leaves at the crowded end."
+#| fig-height: 4.6
+#| fig-width: 9
+
+fig, ax = plt.subplots(figsize=(9, 4.6))
+cols = {"parameter_grid": "#E69F00", "animal_subsample": "#0072B2", "shuffled_null": "#CC79A7"}
+labels = {"parameter_grid": "Parameter grid (45 settings)", "animal_subsample": "75% of animals (100 draws)", "shuffled_null": "Shuffled labels (100 draws)"}
+for c in rec.columns:
+    ax.scatter(rec[c], rec.index, s=70, color=cols[c], label=labels[c], zorder=3)
+ax.hlines(rec.index, 0, 1, color="0.9", zorder=1)
+ax.invert_yaxis(); ax.set_yticks(rec.index); ax.set_xlim(-0.03, 1.03)
+ax.set_xlabel("Share of runs that recover the node"); ax.set_ylabel("Node of the reference graph")
+ax.legend(loc="center left", bbox_to_anchor=(1.01, 0.5))
+plt.tight_layout(); plt.show()
+```
+
+# What is left {#sec-left}
+
+The trunk, nodes 0 to 5, is recovered in most grid settings and in every subsample. It is also recovered in every shuffled run, and that is the lesson: the trunk is the lens. Local density orders the cells, and cells of similar density have similar neighbourhoods whatever their labels; the trunk would be there for any data with a density gradient. It is a fine description of the scar, but not a discovery.
+
+The leaves are where the controls disagree. Node 6, the dense neighbourhood of microglia and astrocytes without neurons, is recovered in `{python} f"{rec.animal_subsample[6]:.0%}"` of the animal subsamples and in `{python} f"{rec.shuffled_null[6]:.0%}"` of the shuffled runs. That is what a real feature looks like: it comes back when animals change and it almost never appears by chance. Node 7, a neuron-rich neighbourhood at the same density, survives the subsamples (`{python} f"{rec.animal_subsample[7]:.0%}"`) but also appears in `{python} f"{rec.shuffled_null[7]:.0%}"` of shuffled runs, so the null can produce it. Nodes 8 and 9 are recovered in `{python} f"{rec.animal_subsample[8]:.0%}"` and `{python} f"{rec.animal_subsample[9]:.0%}"` of the subsamples: they are built on `{python} int(T.cells[8])` and `{python} int(T.cells[9])` cells and I would not interpret them.
+
+And yet node 6 is not safe. It is recovered in only `{python} f"{rec.parameter_grid[6]:.0%}"` of the grid.
+
+```{python}
+#| label: Node6_by_eps
+
+grid = chk["grid"].assign(node6=chk["grid_rec"][:, 6])
+grid.groupby("eps").node6.mean().round(2).rename("share of settings that recover node 6")
+```
+
+The table is the real result of this post. Node 6 appears when the clustering scale is 0.3, the reference value, and nearly vanishes at 0.2 and at 0.45. In words: there is a dense, glia-only neighbourhood in the scar, and Mapper sees it only when the clustering rule is tuned to its size. Below that scale the neighbourhood breaks into fragments smaller than `min_node`; above it, it is absorbed into the trunk. This is a candidate, not a finding. The next step would be to ask for it directly, without Mapper: take the cells with the composition of node 6 and look at where they are.
+
+```{python}
+#| label: fig-Map
+#| fig-cap: "The cells of node 6 in the section with the most of them. Grey: all cells; orange: cells in node 6; the outline is the section."
+#| fig-height: 5.2
+#| fig-width: 7
+
+best = pd.Series(ids[G.nodes[6]["idx"]]).value_counts().index[0]
+sec = cells[cells.ID == best]
+member = np.isin(sec.index, G.nodes[6]["idx"])
+pg = windows[windows.ID == best][["x", "y"]].to_numpy()
+fig, ax = plt.subplots(figsize=(7, 5.2))
+ax.plot(*np.vstack([pg, pg[:1]]).T, color="0.3", lw=1.2)
+ax.scatter(sec.x[~member], sec.y[~member], s=5, color="0.8")
+ax.scatter(sec.x[member], sec.y[member], s=22, color="#D55E00", edgecolor="k", linewidth=0.4)
+ax.set_aspect("equal"); ax.axis("off")
+ax.set_title(f"Animal {best} ({DPI_OF[best]}): {member.sum()} cells of node 6")
+plt.tight_layout(); plt.show()
+```
+
+# The objection, and the cost {#sec-objection}
+
+The best objection to all this is that Mapper is an exploratory tool, and that holding it to a stability test is like asking a sketch to pass an audit. I take it seriously: nobody should be forbidden from drawing a map to decide where to look. My answer is about what happens to the sketch next. Exploratory pictures get quoted as findings, usually after the second time they are shown. A branch that depends on one clustering scale is cheap to publish and expensive to retract, and the control that tells them apart takes about five minutes of compute and twenty lines of code. If your graph survives, you have lost nothing. If it does not, you found out before a reviewer did.
+
+I also owe you the limits of my own controls, where you would object. The shuffled null is harsh: it removes every relationship between type and position, so any graph with a density gradient will beat it on the trunk, and the right reading is the node-by-node one above. A gentler null would permute labels within bands of local density and ask whether composition varies beyond what density alone explains. And the recovery rule depends on two tolerances that I set. If the leaf conclusion flips when you change them, the conclusion was the tolerance.
+
+# Your turn
+
+- Which lens would you defend for your data, and what real scale (a distance, a time, a size) justifies its number of intervals?
+- Change `SIG` to 0.1 and rerun the whole chain. Does node 6 survive at a different neighbourhood scale, or was it a property of 50 µm?
+- Which neighbourhood would you expect to find as a branch in your field, and what would the null have to look like before you believed it?
+- If you think the label-shuffled null is the wrong control for Mapper, I want the null you would use instead.
+
+I read and answer every comment. Next in this series I will leave the points behind and persist the density raster itself; if you would rather see Euler characteristic curves first, say so.
+
+The code and data are in [the GitHub folder of this article](https://github.com/daniel-manrique/TDS-Medium_Blog/tree/main/articles/2026-10-28_TDA_Mapper).
+
+All images, unless otherwise stated, were generated using the displayed Python code.

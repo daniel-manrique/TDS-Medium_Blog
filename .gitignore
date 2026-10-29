@@ -18,3 +18,4 @@ _freeze/
 articles/**/models/*.rds
 articles/**/models/*.rds.*
 templates/**/models/*.rds
+articles/**/models/*.pkl

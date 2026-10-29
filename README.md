@@ -16,6 +16,7 @@ Reproducible code, data and Quarto documents behind my articles on statistics an
 | 2026-10-28 | Your 'Outliers' Are Telling You Something: Rebuilding a Student-t Analysis From Scratch | [articles/2026-10-28_OutliersRevisited](articles/2026-10-28_OutliersRevisited) |
 | 2026-10-28 | Persistent Homology Sees What Pair Correlation Cannot. A Null Model Decides If It Matters. (R) | [articles/2026-10-28_TDA_R](articles/2026-10-28_TDA_R) |
 | 2026-10-28 | Does the Shape Beat the Count? Persistent Homology in Python for Point Clouds | [articles/2026-10-28_TDA_Python](articles/2026-10-28_TDA_Python) |
+| 2026-10-28 | Mapper Draws the Map of Your Point Cloud. A Shuffled Null Tells You Which Roads Are Real. (Python) | [articles/2026-10-28_TDA_Mapper](articles/2026-10-28_TDA_Mapper) |
 
 ## Repository layout
 
@@ -42,10 +43,10 @@ All paths inside an article are relative to its own folder (`data/...`, `models/
    install.packages(c("brms", "tidybayes", "ggdist", "modelr", "patchwork", "easystats",
                       "dplyr", "tibble", "tidyr", "ggplot2", "ghibli", "gtsummary", "spatstat", "readxl", "loo", "knitr", "TDA"))
    ```
-   The Python article (`2026-10-28_TDA_Python`) also needs Python 3 with its Jupyter kernel:
+   The Python articles (`2026-10-28_TDA_Python`, `2026-10-28_TDA_Mapper`) also need Python 3 with its Jupyter kernel:
 
    ```bash
-   pip install gudhi numpy pandas scipy scikit-learn matplotlib jupyter
+   pip install gudhi numpy pandas scipy scikit-learn networkx matplotlib jupyter
    ```
 3. Render one article, or all of them:
 
