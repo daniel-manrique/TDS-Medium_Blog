@@ -1,6 +1,6 @@
 ---
 title: "How to Tell Attraction from Absence in Spatial Point Patterns using R, spatstat and brms (Part 3)"
-subtitle: "Cross-type pair correlation with spatstat and brms, with the animal as the unit of analysis."
+subtitle: "A cross pair correlation can mistake missing tissue for repulsion. Here is how to check."
 keywords:
   - Spatial analysis
   - Point Pattern Analysis (PPA)
