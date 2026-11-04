@@ -1,5 +1,5 @@
 ---
-title: "Attraction or Absence? Reading Cell–Cell Distances in a Glial Scar"
+title: "How to Tell Attraction from Absence in Spatial Point Patterns using R, spatstat and brms (Part 3)"
 subtitle: "Cross-type pair correlation with spatstat and brms, with the animal as the unit of analysis."
 keywords:
   - Spatial analysis
@@ -187,8 +187,9 @@ There are `r nrow(Info_df)` animals, in groups of `r paste(table(Info_df$DPI), c
 ```{r}
 #| label: fig-ExampleAnimal
 #| fig-cap: "Neurons, astrocytes and microglia in one animal at 5D (M01). Each dot is a detected cell."
-#| fig-height: 5
+#| fig-height: 9
 #| fig-width: 14
+#| out-width: 100%
 
 Example_df <- bind_rows(
   as.data.frame(PointPatterns$Neurons$M01)    %>% mutate(Type = "Neurons"),
@@ -197,7 +198,7 @@ Example_df <- bind_rows(
 ) %>% mutate(Type = factor(Type, levels = c("Neurons", "Astrocytes", "Microglia")))
 
 ggplot(Example_df, aes(x, y)) +
-  geom_point(size = 0.6, alpha = 0.7, colour = "#D55E00") +
+  geom_point(size = 1, alpha = 0.7, colour = "#D55E00") +
   facet_wrap(~Type, nrow = 1) +
   coord_equal() +
   labs(title = "One animal, three cell types", x = "x (mm)", y = "y (mm)") +
@@ -459,6 +460,7 @@ ggplot(Draws_df, aes(x = .epred, y = DPI, fill = DPI)) +
   geom_vline(xintercept = 0, linetype = "dashed") +
   facet_grid(Pair ~ Method, labeller = labeller(Pair = Pair_labels)) +
   scale_fill_manual(values = DPI_cols, guide = "none") +
+  coord_cartesian(xlim = c(-2.3, 1.2)) +
   labs(title = "Naive versus corrected association", x = "log2 association (0 = no interaction)", y = NULL) +
   Plot_theme
 ```
